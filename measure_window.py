@@ -74,6 +74,7 @@ class RealTokenizer:
                 "not a usable window. Nothing was measured."
             )
         self._budget = budget
+        self.probes_over_window = 0
 
     @property
     def name(self) -> str:
@@ -84,7 +85,17 @@ class RealTokenizer:
         return self._budget
 
     def count(self, text: str) -> int:
-        return len(self._tk.encode(text, add_special_tokens=True))
+        # verbose=False silences the library's "sequence longer than the
+        # maximum" warning. It is silenced and then COUNTED, not hidden: the
+        # chunker discovers a fit by asking about candidates that do not fit,
+        # so that warning fires on probes and is expected. Left visible, it
+        # appears in the middle of a report whose headline says nothing went
+        # over the window, and the reader is entitled to conclude the report
+        # is lying. Raised as IA-174.
+        n = len(self._tk.encode(text, add_special_tokens=True, verbose=False))
+        if n > self._budget:
+            self.probes_over_window += 1
+        return n
 
 
 def character_budget_chunks(text: str, budget_tokens: int) -> list[str]:
@@ -184,6 +195,11 @@ def main(argv: list[str] | None = None) -> int:
           f"(text the model would never have read)")
     print(f"  window used            {a_use:.0f}% on average  "
           f"(mean {a_mean:.0f} of {tok.budget} tokens)")
+    if a_mean:
+        real_ratio = size_a / a_mean
+        off = 100.0 * (real_ratio - CHARS_PER_TOKEN) / CHARS_PER_TOKEN
+        print(f"  the real ratio here    {real_ratio:.2f} chars/token, against the "
+              f"{CHARS_PER_TOKEN} assumed ({off:+.0f}%)")
     print()
     print("arm B, packed to the real window")
     print(f"  chunks                 {b_total}")
@@ -192,6 +208,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  needed a hard split    {b_hard_splits}  (recorded, not silent)")
     print(f"  window used            {b_use:.0f}% on average  "
           f"(mean {b_mean:.0f} of {tok.budget} tokens)")
+    print()
+    print(f"probes over the window   {getattr(tok, 'probes_over_window', 0)}")
+    print( "  A fit is found by asking about candidates that turn out not to fit,")
+    print( "  so these are expected. None of them became a chunk: both arms report")
+    print( "  zero over the window above, and that is the number that matters.")
 
     if skipped:
         print()

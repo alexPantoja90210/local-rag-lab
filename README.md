@@ -140,16 +140,41 @@ both with the real tokenizer:
 - **arm A**, the rule of thumb: fixed character windows
 - **arm B**, this chunker: packed with the model's own tokenizer
 
-Arm B must overflow zero times by construction; arm A is the question. The
-script reports overflow counts, how many tokens of text the model would never
-have seen, and **how much of the window each arm actually used**. A fixed
-character budget cannot adapt, so it has to be conservative enough for the
-worst text and is therefore wasteful on ordinary text, while still overflowing
-on the atypical.
+Arm B must overflow zero times by construction; arm A is the question.
 
 If the tokenizer cannot be loaded the script stops and says so. There is no
 fallback estimate, because a number produced by guessing the thing being
 measured is worse than no number.
+
+### What it measured
+
+`mxbai-embed-large-v1`, window **512 tokens read from the model**, over the
+four plain-text documents in the sample corpus. The nine others were skipped
+and listed: seven need a converter, two were rejected by the ingest contract.
+
+|  | arm A, rule of thumb | arm B, token aware |
+| --- | --- | --- |
+| chunks | 16 | **12** |
+| over the window | 0 | 0 |
+| largest chunk | 398 / 512 | 510 / 512 |
+| window used, mean | **62%** | **82%** |
+
+**Arm A did not overflow.** On business prose the rule of thumb held, and that
+is a fact about this text rather than about the rule: the same constant
+overflowed 864 of 11,529 passages of regulatory text on the previous project.
+One constant cannot be right for two corpora.
+
+**What it did instead is the finding.** 1792 characters came to a mean of 315
+tokens, so the real ratio on this text is **5.69 characters per token against
+the 3.5 assumed, off by 63%** — and off in the safe direction, which is why
+nothing ever failed. No error, no warning, no red test. It quietly left 38% of
+the window unused, forever.
+
+In product terms, at `k=5` over the same corpus: arm A delivers 1,575 tokens of
+context, arm B delivers 2,090. **A third more usable context, from the same
+documents and the same k**, for no extra retrieval and no extra spend.
+
+The ratio line is in the script's output, so the next corpus reports its own.
 
 ## The suite counts itself, and proves it can fail
 
