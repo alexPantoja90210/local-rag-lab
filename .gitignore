@@ -1,0 +1,18 @@
+# derived, never source
+fixtures/
+__pycache__/
+*.pyc
+
+# environments
+venv/
+.venv/
+
+# secrets, by shape and not by location
+.env
+.env.*
+*.env
+.envrc
+
+# corpora are never committed
+documents/
+data/
