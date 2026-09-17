@@ -493,6 +493,110 @@ structure and the budget invariants would pass without the budget doing any
 work. And the bare-except scanner must find a planted one, otherwise a scanner
 that always returns nothing would look identical to a working one.
 
+## Walkthrough: one ungrounded sentence, and how you know the refusal works
+
+The claim this repository makes is not *the model hallucinates less*. That is unverifiable: there is no experiment you can run to establish it, so it is asserted, hoped for, and discovered in production.
+
+The claim is narrower and it is checkable: **an ungrounded answer is detectable and refusable.** This section is the whole chain, because a claim about mechanism should be followable end to end by a stranger.
+
+### Step 1. The sentence
+
+The model retrieved, was given three passages, and produced this:
+
+```
+Approvals expire after eight hours [[be5798a9...]].
+```
+
+It looks correct. The id is well formed, it resolves, the document is real, and the fact is true of the corpus. **It was not one of the three passages supplied on this turn.** The model recognised the chunk id and wrote about a passage it was not shown, which means the sentence came out of its weights.
+
+Nothing about the output distinguishes this from a correct answer. That is the point of the example.
+
+### Step 2. What refuses it
+
+Four lines in `citation_gate.py`:
+
+```python
+for cited in claim.citations:
+    if cited in supplied_set:
+        continue
+    if known_set is not None and cited in known_set:
+        violations.append(Violation(kind=NOT_SUPPLIED, ...))
+```
+
+`supplied_set` is what retrieval handed the model **on this turn**. Not what is in the store, not what it saw three turns ago. The refusal names the claim and the id, and the generated text is discarded rather than returned.
+
+That is the mechanism. Everything after this step exists to establish that those four lines actually run and actually decide.
+
+### Step 3. How you know the line runs
+
+```python
+check("a real chunk that was not supplied this turn is refused", not _unsupplied.passed)
+check("a real unsupplied chunk is named not_supplied, not invented",
+      _v(_unsupplied).kind == gate.NOT_SUPPLIED)
+```
+
+The suite asserts it, prints `ok`, and counts itself. **This is the weakest link in the chain**, and most projects stop here. An assertion that has never been observed failing tells you nothing about whether it is capable of failing.
+
+### Step 4. How you know the assertion can fail
+
+`prove_it_can_fail.py` copies the tree, removes the rule, and requires the suite to go red:
+
+```python
+("citation_gate.py",
+ "the supply check removed: every citation accepted",
+ "            if cited in supplied_set:\n                continue",
+ "            if True:\n                continue",
+ [...the invariants that must go red...])
+```
+
+Real output:
+
+```
+mutation: the supply check removed: every citation accepted
+  in                   citation_gate.py
+  suite exit code      1   (must be non-zero)
+  invariants gone red  13
+          - a real chunk that was not supplied this turn is refused
+          - a citation naming an unknown id is refused
+          - a prefix of a supplied id is not a match
+          - case is not folded when matching an id
+          - an answer produced without retrieving cannot survive the gate
+  RESULT  caught, by the invariants that should catch it
+```
+
+Break the rule on purpose, and thirteen assertions go red.
+
+### Step 5. How you know the mutation proved *that* rule
+
+A mutation that reddens the suite for an unrelated reason proves nothing. So each one **names the invariants it expects**, and the harness checks that those are the ones that fired. Anything else prints `RESULT wrong invariants caught it` and exits non-zero.
+
+That branch is not decoration. **It has fired twice for real.** Once when a mutation's anchor text had moved, so a rule was silently going untested, and once today on a mutation of mine that broke the code in a way that reddened the suite for a reason unrelated to the rule it claimed to test. Both times the harness caught it and the author did not.
+
+### Step 6. How you know it is not simply refusing everything
+
+A gate that refuses every answer would satisfy every assertion in step 3. So four of the nineteen controls exist for this rule alone, and they pass only when something is **not** true:
+
+```
+control: an answer citing a supplied chunk is refused too
+control: an answer passes when nothing at all was supplied
+control: the citation parser finds nothing in text that carries a citation
+control: a turn that never retrieved can still produce a passing answer
+```
+
+If the gate started refusing everything, the first goes red. If the parser went blind, the third goes red and every refusal above it becomes an artefact of the parser rather than evidence about the answer.
+
+### What this does not prove
+
+It does not prove the model hallucinates rarely. It proves that **when it does, the output does not reach a user with the appearance of a citation.** Those are different claims, and only one of them can be checked by running something.
+
+It also does not prove faithfulness. A claim citing a supplied passage can still misrepresent it, and this chain will pass it. That gap is named in *What this does not do yet* rather than covered.
+
+### The contrast, stated plainly
+
+Ask what experiment would verify *"it hallucinates less."* Less than what, measured how, on which corpus, against what baseline, and observable by whom? There is no answer that a reader could run.
+
+Now ask what experiment verifies *"an ungrounded claim is refused."* Delete the check, run the suite, and watch thirteen assertions go red. **That is the difference, and it is the whole argument for the six steps above.**
+
 ## What this does not do yet
 
 - **It does not check that a claim is faithful to the passage it cites.** A
@@ -505,6 +609,11 @@ that always returns nothing would look identical to a working one.
   have answered. The gate's job is grounding, and abstaining too readily is
   unhelpful rather than ungrounded. The question set can measure it and nothing
   here does.
+- **There is no conversation.** Every call sends one system message and one user
+  message: no history, no follow-ups, no turn cap, and no interface a person can
+  sit in front of. Figure 2 of the target architecture draws three refusals and
+  two are built. Named as IA-186 and scoped as IA-187, rather than left as an
+  implied promise.
 - It does not read PDFs, Word files or audio. Only `.md` and `.txt` are stored,
   so four of the sample corpus's thirteen documents reach the store. Docling is
   a later slice, and "unanswerable" in the question set means unanswerable from
