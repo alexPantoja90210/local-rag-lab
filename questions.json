@@ -1,0 +1,20 @@
+{
+  "corpus": "the four plain-text documents in the Docling sample corpus (MIT). The PDFs and recordings are not ingested by this slice, so 'unanswerable' below means unanswerable from what was actually stored.",
+  "note": "Families A and B ask about the same kind of fact. A names the company, B does not. If the agent skips retrieval more often on B, it is skipping precisely where its own priors feel sufficient, which is H2.",
+  "questions": [
+    {"id": "a1", "family": "A", "text": "What is the annual learning budget for each employee at NeuralFlow AI?", "answerable": true},
+    {"id": "a2", "family": "A", "text": "How long are new hires at NeuralFlow AI paired with a mentor?", "answerable": true},
+    {"id": "a3", "family": "A", "text": "How far in advance must a meeting agenda be shared at NeuralFlow AI?", "answerable": true},
+    {"id": "a4", "family": "A", "text": "What is the minimum PTO expectation under NeuralFlow AI's unlimited policy?", "answerable": true},
+
+    {"id": "b1", "family": "B", "text": "What percentage is the 401(k) company match?", "answerable": true},
+    {"id": "b2", "family": "B", "text": "How quickly should Slack messages be answered during work hours?", "answerable": true},
+    {"id": "b3", "family": "B", "text": "What is the annual learning budget per employee?", "answerable": true},
+    {"id": "b4", "family": "B", "text": "How long does the onboarding mentorship last?", "answerable": true},
+
+    {"id": "c1", "family": "C", "text": "What is the parental leave policy at NeuralFlow AI?", "answerable": false},
+    {"id": "c2", "family": "C", "text": "Does NeuralFlow AI accept payment in cryptocurrency?", "answerable": false},
+    {"id": "c3", "family": "C", "text": "What is NeuralFlow AI's severance policy?", "answerable": false},
+    {"id": "c4", "family": "C", "text": "Which Kubernetes version does NeuralFlow AI run in production?", "answerable": false}
+  ]
+}

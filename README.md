@@ -2,12 +2,14 @@
 
 A grounded RAG that runs on one laptop and refuses what it cannot cite.
 
-**Status: slices 1, 2 and 3 of four.** What is in this repository today decides
-whether a document may enter the knowledge base, splits what gets in into chunks
-the embedding model can actually read, and keeps the vectors in two files that
-refuse a query built by a different embedder. There is no retrieval and no model
-yet, and the target architecture says which parts are still missing and why each
-one is there.
+**Status: four slices of four.** This repository decides whether a document may
+enter the knowledge base, splits what gets in against the embedding model's real
+token window, keeps the vectors in two files that refuse a query built by a
+different embedder, retrieves with the score reaching the caller, and discards
+generated text that cites anything it was not given.
+
+It runs on one laptop with Ollama. No key, no account, no database, no Docker,
+and nothing leaves the machine.
 
 **There is no database, and that is a decision with numbers behind it.** See
 *The store* below.
@@ -18,20 +20,26 @@ one is there.
 
 Slice 1 decides whether a file may enter the knowledge base. Slice 2 splits what
 gets in, against the embedding model's real token window. Slice 3 keeps the
-vectors, and refuses a query that was not built by the same packing.
+vectors, and refuses a query that was not built by the same packing. Slice 4
+retrieves, generates, and throws away an answer that cites something it was
+never shown.
 
 ```
-python make_fixtures.py                      # build the fixture corpus
-python test_invariants.py                    # 196 invariants, no key, no network, no spend
-python prove_it_can_fail.py                  # break the code 12 ways, check the suite notices
-python ingest_contract.py --documents docs/  # check a real folder
-python measure_window.py --documents docs/   # the one script that needs a download
+python make_fixtures.py                          # build the fixture corpus
+python test_invariants.py                        # counts itself, no key, no network, no spend
+python prove_it_can_fail.py                      # break the code, check the suite notices
+python ingest_contract.py --documents documents  # check a real folder
+
+# these three need Ollama running on this machine
+python build_store.py  --documents documents --store store/demo
+python ask.py          --store store/demo --questions questions.json --verbose
+python prove_the_detector_sees.py                # the control on the measurement itself
 ```
 
-Everything except the last line costs nothing and reaches no network. There is
-**no `requirements.txt`**: the standard library is the whole dependency list,
-and `measure_window.py` needs `transformers` only because it asks a real model
-how much it can read.
+The first four cost nothing and reach no network. There is **no
+`requirements.txt`**: the standard library is the whole dependency list.
+`measure_window.py` and `build_store.py` need `transformers`, only because they
+ask a real model how much it can read.
 
 ## The two rules, and where they came from
 
@@ -260,17 +268,193 @@ through numpy when it is installed. An invariant asserts they agree to within
 1e-5 on every query. **A fast path nobody can check against a slow one is a fast
 path nobody can check.** numpy is never required.
 
+## Slice 4: retrieval, and the gate that discards what it was not given
+
+Every tutorial in this family holds its grounding in place with a line of
+prompt. *Always search the knowledge base.* *Only answer from the provided
+context.* Nothing reads the answer afterwards, nothing compares what was cited
+against what was supplied, and nothing can refuse. The model complies most of
+the time, which is the worst possible failure rate: often enough to look
+trustworthy, not often enough to be.
+
+### The score reaches the caller
+
+Both upstream agents compute a similarity and discard it one line later. pyflakes
+says so out loud in one of them: `local variable 'similarity' is assigned to but
+never used`. A score that never reaches the caller is a threshold that cannot
+exist and an abstention that cannot be justified, so `threshold` here is
+keyword-only and **has no default value**. Passing `None` means there is no
+floor and has to be an act, because on the previous project a message blamed a
+cutoff that was switched off and sent somebody looking in the wrong place for an
+afternoon.
+
+### Four things the gate refuses, and the third is why it exists
+
+1. **A claim with no citation.** The obvious one.
+2. **A citation naming an id that does not exist.** Also obvious, once something
+   looks.
+3. **A citation naming a real chunk that was not supplied on this turn.** This
+   is the one. The id resolves, the document is real, the citation renders as a
+   working reference, and the model was never shown that passage, so whatever it
+   said about it came out of its weights. By eye it is indistinguishable from a
+   correct answer. It is the same shape as the store's fingerprint refusal: a
+   failure whose output looks exactly like success.
+4. **A claim that is nothing but a citation.** A gate that counts `[[a3f...]]`
+   as satisfied can be passed by a model that emits citations and no content.
+
+Matching is exact. No case folding, no prefix matching. `if cited in
+supplied_text` passes on a substring, and that is how a check like this usually
+fails open.
+
+### The abstention, and a lesson about two-part instructions
+
+The first version of this gate discarded **correct** abstentions. Asked an
+unanswerable question, the model retrieved, read the passages, found nothing and
+said so, and the gate threw it away for carrying no citation. Worse: the prompt
+had asked it to abstain *and* cite the closest passage, so had the model obeyed,
+it would have produced a sentence citing a passage that does not support it, and
+**the gate would have passed it.** On abstentions the sign was inverted, and a
+decorative citation scored better than an honest one.
+
+The fix was a reserved citation, `[[none]]`, and it failed too, in the mirror
+image. Told to send the marker *and* a sentence, the model sent the marker and no
+sentence, exactly as it had sent a sentence and no marker before. It obeyed half
+of a two-part instruction both times, a different half each time, and both times
+a correct abstention was discarded.
+
+The two halves were never alike. The marker is a **verdict** and only the model
+can produce it, because only the model read the passages. The sentence is
+**wording**: not a claim, resting on no passage, stating nothing about the corpus
+that could be wrong. So the sentence is not asked for. The system writes it.
+
+    The passages retrieved for this question do not contain an answer to it.
+
+An abstention is its own outcome, counted apart from an answer. Folding the two
+together would report a higher success rate and would stop distinguishing a
+model that answers from one that knows when it cannot, which is the distinction
+this repository is about.
+
+An abstention is all or nothing, it may not sit beside a grounded claim, and it
+is **refused outright when nothing was supplied**. That last rule is what keeps
+skipping retrieval worthless: without it, a model declines to retrieve, emits
+the marker, and walks out through the gate.
+
+### The measurement, and the control on the measurement
+
+Retrieval is a tool the model may decline to call. The question is how often it
+declines, and that number is this slice's result.
+
+```
+0 of 12 turns never retrieved (0.0%) · 8 answered and survived the gate · 4 abstained, having looked
+
+  A   0 of 4 never retrieved      names the company
+  B   0 of 4 never retrieved      same facts, does not name the company
+  C   0 of 4 never retrieved      cannot be answered from what was stored
+```
+
+`llama3.1:8b`, `mxbai-embed-large`, k of 5, no threshold, twelve questions, one
+run. **The prediction registered before the run was that the agent would skip
+retrieval where its own priors felt sufficient, and that family B would be
+skipped more than family A. It was not supported.** Nothing was skipped
+anywhere. That publishes as it stands.
+
+The eight answerable questions were answered correctly and cited a supplied
+passage every time. The four unanswerable ones abstained, having looked.
+
+Two things about that table are worth saying out loud.
+
+**It is one run and not two spliced together.** An earlier run had these same
+eight answers under a different generation prompt, and the prompt changed while
+fixing the abstention. Reusing those eight beside four fresh ones would have
+been two runs reported as one, and the differences would almost certainly have
+been nil, which is not the same as measured.
+
+**Latency is the cost that is not zero**, and the target architecture said so
+before any of this ran: **90.9 seconds mean per question**, two model calls
+each, 65.5 to 119.1, 18.2 minutes for twelve questions on a 16 GB Windows
+laptop. Money is not the budget here. Waiting is.
+
+**Zero is the one value this instrument could not tell apart from a blind
+instrument.** Every assertion about the skip detector runs against a response
+this repository wrote itself, so the negative path had never been walked with a
+real server behind it, and a scanner that always returns nothing looks identical
+to a working scanner.
+
+`prove_the_detector_sees.py` settles it, and the shape of that control matters
+more than its result. The first attempt told the model *not* to search and
+watched for skips. The model searched anyway, so the run ended with the two
+explanations still stuck together: a model that ignores the instruction and a
+detector that cannot see a skip produce identical output. **A control that
+varies the thing under test cannot isolate it.**
+
+The control that works does not ask the model for anything. It **removes the
+tool**. With no tool in the request the response can only be plain content,
+which is exactly the shape a real skip has, and it arrives from the real server:
+
+```
+arm 1  the tool is offered      message keys ['content', 'role', 'tool_calls']  -> True
+arm 2  NO tool is offered       message keys ['content', 'role']                -> False
+```
+
+Two API facts fell out of it, previously assumed and now observed: a real
+no-tool-call response **omits** `tool_calls` rather than sending an empty list,
+and when a tool *is* called, `content` is the empty string.
+
+### What the control caught while looking for something else
+
+Arm 2 gave the model no tool, no passages and no corpus. It answered:
+
+> *According to the NeuralFlow AI Knowledge Base, the company has a dedicated
+> "Annual Learning..."*
+
+It attributed its answer, by name, in the voice of a citation, to a source it
+had never read. Not a model getting a fact wrong, which is ordinary. A model
+manufacturing **the appearance of grounding** while ungrounded, which is the
+failure that survives review because it looks like diligence.
+
+No instruction would have prevented that sentence. The gate discards it, because
+prose attribution is not a supplied chunk id and the gate does not accept prose
+as a citation.
+
+### What a threshold cannot do at this size
+
+The unanswerable questions did not score lower than the answerable ones.
+
+| | top score |
+| --- | --- |
+| c3, severance, not in the corpus | **0.732** |
+| a3, the 24-hour agenda rule, in the corpus | 0.686 |
+| b1, the 401(k) match, in the corpus | 0.545 |
+
+The best-scoring unanswerable question beat **five of the eight** answerable
+ones. Any floor that refuses c3 also refuses those five; any floor that admits
+all eight admits all four unanswerable ones. **At this corpus size a similarity
+threshold does not separate a question the corpus can answer from one it
+cannot.** The citation gate, not the threshold, is what ends those turns, and
+the threshold in Figure 2 of the target architecture does not do the job the
+drawing gives it here.
+
+Measured on twelve questions and four documents. Not claimed to generalise.
+
 ## The suite counts itself, and proves it can fail
 
 ```
 $ python test_invariants.py
 ...
-all 196 invariants hold
+all 329 invariants hold, 19 of them controls
 ```
 
-The count is printed rather than left to be counted by hand, because on the
+Both counts are printed rather than left to be counted by hand, because on the
 previous project two counts of assertions were stated from memory on the same
 day and both were wrong.
+
+The control count is printed for a narrower reason, and it is the better story.
+The invariant count has been printed since the first commit and has never been
+wrong since. The control count sat in the same sentence of this same README and
+was still written by hand, and it was wrong for a day: this file said four while
+the suite held six. **A number that is printed is checked. A number beside it
+that is remembered is not, and on the page the two look identical.** So the
+suite produces both, and everything that quotes them quotes a line it printed.
 
 Passing is not the claim. `prove_it_can_fail.py` copies the tree, breaks the
 code twelve ways, and checks that the suite goes red **and that the invariants
@@ -279,20 +463,29 @@ the suite for some unrelated reason would prove nothing, so each one names the
 invariants it expects:
 
 ```
-baseline: all 196 invariants hold  (exit 0)
+baseline: all 329 invariants hold, 19 of them controls  (exit 0)
 
 mutation: the extension rule removed                          in ingest_contract.py
 mutation: a failed read returned as content, the upstream defect
-mutation: a bare except reintroduced
 mutation: the token budget ignored while packing              in chunker.py
 mutation: the tail of the document dropped, the truncation this module forbids
-mutation: a fresh id per run, the upstream defect
-mutation: the split level no longer recorded
-
-all 12 mutations were caught. The suite can fail.
+mutation: the packing fingerprint no longer checked            in store.py
+mutation: the supply check removed: every citation accepted    in citation_gate.py
+mutation: prefix matching, the way a check like this usually fails open
+mutation: an abstention allowed with no passages supplied, so skipping pays again
+mutation: a malformed tool_calls read as 'did not retrieve'    in ollama_client.py
+...
+all 28 mutations were caught. The suite can fail.
 ```
 
-Four of the 196 are **controls**: they pass only when something is *not* true.
+Twice now the harness has refused a mutation of mine rather than counting it.
+Once because an anchor had moved, so a rule was going untested. Once with
+`wrong invariants caught it`, because the mutation I wrote broke the code in a
+way that reddened the suite for an unrelated reason. Both times the mechanism
+caught it and not my attention, which is the entire argument for having the
+mechanism.
+
+Nineteen of the 329 are **controls**: they pass only when something is *not* true.
 Switching the extension rule off must make the mislabelled file pass, otherwise
 something else is rejecting it. A budget large enough to hold a whole document
 must still produce more than one chunk, otherwise the splitter is cutting on
@@ -302,15 +495,27 @@ that always returns nothing would look identical to a working one.
 
 ## What this does not do yet
 
-- It does not read a document, and it does not embed one. It decides whether a
-  document may be read, how its text would be split, and where the resulting
-  vectors live once something else has produced them.
+- **It does not check that a claim is faithful to the passage it cites.** A
+  sentence can cite a supplied passage and misrepresent it completely, and the
+  gate will pass it. Verbatim span matching is designed and deliberately not
+  built. What is enforced is narrower and worth naming precisely: every claim
+  points at something the model was actually shown. That is a real guarantee and
+  it is not the guarantee a reader assumes from the words "citation gate".
+- It does not measure **over-abstention**, a model declining a question it could
+  have answered. The gate's job is grounding, and abstaining too readily is
+  unhelpful rather than ungrounded. The question set can measure it and nothing
+  here does.
+- It does not read PDFs, Word files or audio. Only `.md` and `.txt` are stored,
+  so four of the sample corpus's thirteen documents reach the store. Docling is
+  a later slice, and "unanswerable" in the question set means unanswerable from
+  what was actually stored.
+- It does not make the model forget. The knowledge is in the weights. This makes
+  using it without support detectable and refusable, which is detection and
+  incentive, not amnesia.
 - It holds everything in memory when it searches. At 45 MB that is not a
   problem. At 50 GB it would be, and that is when a real database earns its
   place.
 - There is no concurrency. One process writes, one process reads.
-- It does not retrieve, generate, cite or refuse an answer. Those are later
-  slices, drawn in the target architecture.
 - It does not verify that a well-formed file says anything true.
 - The bare-except scanner is a source-level check and is labelled secondary in
   the suite, because on the previous project a source-level assertion passed

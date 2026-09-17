@@ -115,7 +115,144 @@ MUTATIONS = [
         "        if False:",
         ["and an empty store says it is empty, not that a threshold failed"],
     ),
+    (
+        "citation_gate.py",
+        "the supply check removed: every citation accepted",
+        "            if cited in supplied_set:\n                continue",
+        "            if True:\n                continue",
+        ["a real chunk that was not supplied this turn is refused",
+         "a citation naming an unknown id is refused",
+         "a prefix of a supplied id is not a match",
+         "case is not folded when matching an id",
+         "an answer produced without retrieving cannot survive the gate"],
+    ),
+    (
+        "citation_gate.py",
+        "prefix matching, the way a check like this usually fails open",
+        "            if cited in supplied_set:\n                continue",
+        "            if any(_s.startswith(cited) for _s in supplied_set):\n                continue",
+        ["a prefix of a supplied id is not a match"],
+    ),
+    (
+        "citation_gate.py",
+        "a claim with no citation allowed through",
+        "        if not claim.citations:",
+        "        if False:",
+        ["a claim with no citation is refused",
+         "one uncited bullet among three is refused",
+         "a citation after the full stop does not ground the sentence before it"],
+    ),
+    (
+        "citation_gate.py",
+        "a bare citation counted as a grounded claim",
+        "        if not claim.prose:",
+        "        if False:",
+        ["a citation on its own is not a claim",
+         "a bare citation is named empty_claim"],
+    ),
+    (
+        "retrieval.py",
+        "a skipped turn allowed to carry supplied chunks, so the count lies",
+        "        if not self.retrieved and self.supplied:",
+        "        if False:",
+        ["a turn that did not retrieve cannot carry supplied chunks"],
+    ),
+    (
+        "ollama_client.py",
+        "the window defaulted to 512 when the server does not report one",
+        "    if not found:\n        raise OllamaRefused(",
+        "    if not found:\n        return 512\n    if False:\n        raise OllamaRefused(",
+        ["model_info with no context length leaves the window unknown"],
+    ),
+    (
+        "ollama_client.py",
+        "a malformed tool_calls read as 'did not retrieve', which fakes the finding",
+        "    if not isinstance(calls, list):\n        raise OllamaRefused(",
+        "    if not isinstance(calls, list):\n        return False\n    if False:\n        raise OllamaRefused(",
+        ["tool_calls that is not a list does not count as not retrieving"],
+    ),
+    (
+        "ollama_client.py",
+        "a response with no message read as 'did not retrieve'",
+        "    if not isinstance(response, dict) or \"message\" not in response:\n        raise OllamaRefused(",
+        "    if not isinstance(response, dict) or \"message\" not in response:\n        return False\n    if False:\n        raise OllamaRefused(",
+        ["a response with no message does not count as not retrieving"],
+    ),
+    (
+        "ollama_client.py",
+        "generation streamed, so a turn can be read from a fragment",
+        "        \"stream\": False,",
+        "        \"stream\": True,",
+        ["generation is not streamed"],
+    ),
+    (
+        "ollama_client.py",
+        "temperature left to whatever the server defaults to",
+        "        \"options\": {\"temperature\": temperature},",
+        "        \"options\": {},",
+        ["temperature is stated on the call rather than left to a default"],
+    ),
+    (
+        "ollama_client.py",
+        "an unfinished response accepted as an answer",
+        "    if data.get(\"done\") is False:",
+        "    if False:",
+        ["an unfinished response is a fragment and is refused"],
+    ),
+    (
+        "ollama_client.py",
+        "the endpoint fallback made silent",
+        # The first attempt at this mutation only disabled the assignment, which
+        # left `elif self.endpoint != endpoint` comparing None against the
+        # endpoint and raising on the very first call. The suite went red for a
+        # reason that had nothing to do with recording the fallback, and the
+        # harness said so: "wrong invariants caught it". Second time that branch
+        # has fired for real. Silence has to be modelled as silence, so both
+        # arms go.
+        "        if self.endpoint is None:\n            self.endpoint = endpoint\n"
+        "        elif self.endpoint != endpoint:",
+        "        if False:\n            self.endpoint = endpoint\n"
+        "        elif False:",
+        ["which endpoint answered is recorded",
+         "the fallback is recorded, not silent"],
+    ),
+    (
+        "citation_gate.py",
+        "an abstention allowed to sit beside a grounded claim, IA-179",
+        "        if len(claims) != 1:",
+        "        if False:",
+        ["an abstention beside another claim is refused",
+         "smuggling a claim past an abstention is named"],
+    ),
+    (
+        "citation_gate.py",
+        "an abstention allowed with no passages supplied, so skipping pays again",
+        "        elif not supplied_t:",
+        "        elif False:",
+        ["an abstention with no passages supplied is refused",
+         "and it is refused for having nothing to be absent from"],
+    ),
+    (
+        "citation_gate.py",
+        "the reserved token treated as an ordinary id, the pre-IA-179 gate",
+        "    marked = [c for c in claims if NONE_TOKEN in c.citations]",
+        "    marked = []",
+        ["an abstention marked with the reserved token passes",
+         "and it is recorded as an abstention, not as an answer",
+         "a turn that looked and found nothing is recorded as abstained"],
+    ),
+(
+        "citation_gate.py",
+        "the abstention answer taken from the model instead of written here",
+        "            answer=ABSTENTION_SENTENCE if passed else None,",
+        "            answer=text if passed else None,",
+        ["an abstention's answer is written by the system, not by the model",
+         "the same sentence whatever the model wrote"],
+    ),
 ]
+
+
+
 
 
 def run_suite(cwd: Path) -> tuple[int, str]:

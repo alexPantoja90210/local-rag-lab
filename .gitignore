@@ -16,3 +16,6 @@ venv/
 # corpora are never committed
 documents/
 data/
+
+# the built store, never committed
+store/
