@@ -34,7 +34,8 @@ python ingest_contract.py --documents documents  # check a real folder
 # these three need Ollama running on this machine
 python build_store.py  --documents documents --store store/demo
 python ask.py          --store store/demo --questions questions.json --verbose
-python chat.py         --store store/demo --seed-ratio 4.0   # never yet run
+python chat.py         --store store/demo --seed-ratio 4.0
+python measure_rewrite_gate.py --store store/demo --questions questions.json
 python prove_the_detector_sees.py                # the control on the measurement itself
 ```
 
@@ -443,7 +444,7 @@ Measured on twelve questions and four documents. Not claimed to generalise.
 ```
 $ python test_invariants.py
 ...
-all 393 invariants hold, 28 of them controls
+all 410 invariants hold, 30 of them controls
 ```
 
 Both counts are printed rather than left to be counted by hand, because on the
@@ -465,7 +466,7 @@ the suite for some unrelated reason would prove nothing, so each one names the
 invariants it expects:
 
 ```
-baseline: all 393 invariants hold, 28 of them controls  (exit 0)
+baseline: all 410 invariants hold, 30 of them controls  (exit 0)
 
 mutation: the extension rule removed                          in ingest_contract.py
 mutation: a failed read returned as content, the upstream defect
@@ -477,7 +478,7 @@ mutation: prefix matching, the way a check like this usually fails open
 mutation: an abstention allowed with no passages supplied, so skipping pays again
 mutation: a malformed tool_calls read as 'did not retrieve'    in ollama_client.py
 ...
-all 38 mutations were caught. The suite can fail.
+all 42 mutations were caught. The suite can fail.
 ```
 
 Twice now the harness has refused a mutation of mine rather than counting it.
@@ -487,7 +488,7 @@ way that reddened the suite for an unrelated reason. Both times the mechanism
 caught it and not my attention, which is the entire argument for having the
 mechanism.
 
-Twenty-eight of the 393 are **controls**: they pass only when something is *not* true.
+Thirty of the 410 are **controls**: they pass only when something is *not* true.
 Switching the extension rule off must make the mislabelled file pass, otherwise
 something else is rejecting it. A budget large enough to hold a whole document
 must still produce more than one chunk, otherwise the splitter is cutting on
@@ -611,15 +612,24 @@ Now ask what experiment verifies *"an ungrounded claim is refused."* Delete the 
   have answered. The gate's job is grounding, and abstaining too readily is
   unhelpful rather than ungrounded. The question set can measure it and nothing
   here does.
-- **The conversation is built and has never been run against a real model.** The
-  history, the turn cap, the rule that an abstention poisons the referent, the
-  rewrite gate and `chat.py` all exist, with 64 invariants, 9 controls and 10
-  mutations behind them. **Every one of those runs against a fake transport and a
-  stub embedder.** No conversational turn has yet reached Ollama, `chat.py` has
-  never been executed, and the two conversations registered as a prediction on
-  IA-187 have not happened. That is the same standard slices 1 to 3 were held to
-  before a model existed, and it is stated here because the alternative is the
-  sentence IA-186 was raised for.
+- **The conversation has been run once, and its control failed.** The history,
+  the turn cap, the rule that an abstention poisons the referent, the
+  introduced-word check and `chat.py` are built. The **presupposition check is
+  off by default** and that is not a preference: on the first real run, asked
+  what its own question took for granted, `llama3.1:8b` answered the question
+  instead, and the gate read its own inability to parse that as evidence of
+  drift. It refused an answerable question. That is IA-189, and it is the same
+  defect as IA-180 one module over.
+  **So what this guarantees today, with the check off:** a follow-up cannot be
+  built on a turn that produced no answer, and a rewritten question cannot
+  introduce a word the conversation never contained. **It does not catch an
+  invented premise assembled from words already present.** Whether the
+  presupposition check is available at all is a measurement, not an opinion, and
+  `measure_rewrite_gate.py` is the measurement.
+- **The turn cap's ratio is wrong and is known to be wrong.** It compares
+  characters of a fragment against tokens of the whole prompt, so it measured
+  0.79 characters per token, which no tokenizer can produce. IA-190. The cap
+  errs toward refusing, which is the safe direction and still useless.
 - It does not read PDFs, Word files or audio. Only `.md` and `.txt` are stored,
   so four of the sample corpus's thirteen documents reach the store. Docling is
   a later slice, and "unanswerable" in the question set means unanswerable from

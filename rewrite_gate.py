@@ -119,11 +119,33 @@ PRESUPPOSITION_SYSTEM = (
 )
 
 
+class RewriteUnreadable(Exception):
+    """The model did not produce a presupposition list. Never a refusal.
+
+    IA-189. The first real run refused the control on an answerable question,
+    because asked what its question took for granted, the model answered the
+    question instead and pasted the passage back. That text has no citations in
+    it, the citation gate refused it correctly, and the turn was recorded as a
+    premise the passages do not support.
+
+    It was nothing of the kind. **The gate had read its own inability to parse as
+    evidence of drift**, which is IA-180 one module over: a client that reads its
+    own bugs as evidence produces a number that rises whenever the client breaks.
+    That one was hardened in `decided_to_retrieve` the same morning, with three
+    mutations behind it, and then built again here before the day was out.
+
+    So an unparseable response raises. It is not allowed, it is not refused, and
+    it is not counted as anything about the model's grounding. The turn stops
+    either way, which is the safe direction, and the count stays honest.
+    """
+
+
 @dataclass(frozen=True)
 class RewriteVerdict:
     """Whether the rewritten question may proceed to an answer."""
 
     allowed: bool
+    readable: bool
     introduced: tuple[str, ...]
     presuppositions: str | None
     gate_result: "gate.GateResult | None"
@@ -205,7 +227,7 @@ def check_rewrite(
     """
     introduced = introduced_words(rewrite, said=said, supplied_texts=supplied_texts)
     if introduced:
-        return RewriteVerdict(False, introduced, None, None, rewrite)
+        return RewriteVerdict(False, True, introduced, None, None, rewrite)
 
     response = oc.chat(
         model,
@@ -214,9 +236,25 @@ def check_rewrite(
         transport=transport)
     text = (response.get("message") or {}).get("content") or ""
 
+    # IA-189. Is this a presupposition list at all? A list is claims, each
+    # carrying a citation. Anything else, an answer to the question, a header
+    # line, a paragraph of prose, is the model not doing the task, and that is
+    # not a fact about whether the question rests on a supported premise.
+    claims = gate.split_claims(text)
+    if not claims:
+        raise RewriteUnreadable(
+            "the model returned nothing when asked what the question presupposes")
+    uncited = [c for c in claims if not c.citations]
+    if uncited:
+        first = uncited[0].prose[:70]
+        raise RewriteUnreadable(
+            f"{len(uncited)} of {len(claims)} lines carry no citation, so this is "
+            f"not a presupposition list. The first is {first!r}. The model did "
+            "not do the task, which says nothing about the question's premises")
+
     verdict = gate.check(text, supplied, known_ids=known_ids)
 
     # The inversion. In an answer an abstention is honest; here it means the
     # question assumes something no passage supports, and the turn stops.
     allowed = verdict.passed and not verdict.abstained
-    return RewriteVerdict(allowed, (), text, verdict, rewrite)
+    return RewriteVerdict(allowed, True, (), text, verdict, rewrite)

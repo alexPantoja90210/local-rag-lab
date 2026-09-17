@@ -326,7 +326,37 @@ MUTATIONS = [
         "    if False:",
         ["a rewrite resting on an unsupported premise stops the turn"],
     ),
+(
+        "rewrite_gate.py",
+        "the parse check removed: an unparseable response counted as drift again, IA-189",
+        "    if uncited:",
+        "    if False:",
+        ["the response that broke the first run is unreadable, not a refusal",
+         "a header line with no citation makes the whole thing unreadable"],
+    ),
+    (
+        "rewrite_gate.py",
+        "an empty response no longer unreadable",
+        "    if not claims:",
+        "    if False:",
+        ["an empty response is unreadable"],
+    ),
+    (
+        "chat.py",
+        "the presupposition switch ignored, so turning it off protects nothing",
+        "    if presupposition_check:",
+        "    if True:",
+        ["with the check off, the model is never asked what the question presupposes"],
+    ),
+    (
+        "chat.py",
+        "the introduced-word check moved behind the switch",
+        "    introduced = rg.introduced_words(query, said=said, supplied_texts=texts)",
+        "    introduced = ()",
+        ["the introduced-word check runs even with the presupposition check off"],
+    ),
 ]
+
 
 
 

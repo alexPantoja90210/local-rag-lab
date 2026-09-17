@@ -72,6 +72,11 @@ REFUSED_CAP = "refused_cap"
 REFUSED_REFERENT = "refused_referent"
 REFUSED_REWRITE = "refused_rewrite"
 
+# IA-189. The model did not produce a presupposition list. Counted apart from
+# every refusal, because folding it in would mean the drift count rises whenever
+# the model stops cooperating with a format.
+UNREADABLE_REWRITE = "unreadable_rewrite"
+
 # The closed list. Hand-written, English, and the weakest part of this module.
 REFERRING = frozenset({
     "that", "those", "it", "its", "they", "them", "their", "this", "these",
@@ -263,9 +268,16 @@ class Conversation:
             messages.append({"role": "assistant", "content": turn.answer or ""})
         return messages
 
+    @property
+    def unreadable(self) -> int:
+        """Turns the model's own output made unjudgeable. Never a finding."""
+        return sum(1 for t in self.turns if t.stage == UNREADABLE_REWRITE)
+
     def line(self) -> str:
-        refused = sum(1 for t in self.turns
-                      if t.stage in (REFUSED_CAP, REFUSED_REFERENT, REFUSED_REWRITE))
-        return (f"{len(self.turns)} turns · {refused} refused before the model "
-                f"was asked · ratio {self.ratio:.2f} chars/token "
-                f"({self.ratio_source})")
+        free = sum(1 for t in self.turns
+                   if t.stage in (REFUSED_CAP, REFUSED_REFERENT))
+        refused = sum(1 for t in self.turns if t.stage == REFUSED_REWRITE)
+        return (f"{len(self.turns)} turns · {free} refused before the model was "
+                f"asked · {refused} refused on a premise · {self.unreadable} "
+                f"unreadable, which is not a finding · ratio {self.ratio:.2f} "
+                f"chars/token ({self.ratio_source})")

@@ -1647,10 +1647,23 @@ check("and that refusal also costs no model call",
       "nothing to refer to" in (getattr(_ref_turn, "refusal", "") or ""))
 
 # The rewrite gate refuses after retrieval and before generation.
-_drifted = _cturn(
-    _talk(),
-    _called("how many weeks of parental leave are offered"),
-    _said_msg("A parental leave policy exists [[none]]."))
+#
+# This first read _cturn(...) with the presupposition check at its default, and
+# after IA-189 made that default off the assertion still passed, for the wrong
+# reason: the query "how many weeks of parental leave are offered" introduces
+# four words, so the deterministic check stopped the turn and the premise check
+# never ran. The harness caught it, with "the suite stayed green" against the
+# mutation that removes the premise branch.
+#
+# So the query is now word-clean, identical to what was said, and the switch is
+# explicitly on. The only thing left that can stop this turn is the premise.
+_drifted = chatmod.converse_turn(
+    _Q5, talk=conv.Conversation(token_budget=4096, seed_ratio=4.0),
+    chat_model="m", embedder=_emb, store_obj=_S4, fingerprint=_fp4,
+    transport=_scripted(_called(_Q5),
+                        _said_msg("A parental leave policy exists [[none]]."),
+                        _said_msg("unused")),
+    k=3, threshold=None, known_ids=_known4, presupposition_check=True)
 check("a rewrite resting on an unsupported premise stops the turn",
       _drifted[0].stage == conv.REFUSED_REWRITE)
 check("and it stops before an answer is generated, with the script still holding one",
@@ -1673,6 +1686,119 @@ control("a clean conversational turn is refused anyway",
                _said_msg("The budget is $2,500 [[%s]]." % _SUP5))[0].stage
         != retrieval.ANSWERED,
         "nothing can get through the four refusals, so none of them prove anything")
+
+
+# --- IA-189: unreadable is not a refusal ------------------------------------
+#
+# The first real run refused an answerable question because the gate could not
+# tell "the model says this premise is unsupported" from "the model did not do
+# the task". These assertions are the separation, and the mutation below is the
+# one that matters: without the parse check, every unparseable response goes
+# back to being counted as drift.
+
+import measure_rewrite_gate as mrg
+
+
+def _presup(text):
+    return rg.check_rewrite(
+        "can the annual learning budget be used for conferences?",
+        said=_said, supplied=(_A,), supplied_texts=_passages,
+        context="[[%s]] %s" % (_A, _passages[0]), model="m",
+        transport=_scripted(_said_msg(text)), known_ids=[_A])
+
+
+# What actually came back on the first run: the passage, pasted, with no citations.
+_real = ("Every employee receives an annual $2,500 learning budget for:\n"
+         "Online courses and certifications\n"
+         "Conference attendance\n"
+         "Books and subscriptions")
+check("the response that broke the first run is unreadable, not a refusal",
+      _raises(lambda: _presup(_real), rg.RewriteUnreadable))
+check("an empty response is unreadable",
+      _raises(lambda: _presup(""), rg.RewriteUnreadable))
+check("a header line with no citation makes the whole thing unreadable",
+      _raises(lambda: _presup("The question takes for granted:\n"
+                              "conferences exist [[%s]]." % _A),
+              rg.RewriteUnreadable))
+
+try:
+    _presup(_real)
+    _msg = ""
+except rg.RewriteUnreadable as _exc:
+    _msg = str(_exc)
+check("and the message says the model did not do the task",
+      "did not do the task" in _msg)
+check("it also says how many lines carried no citation", "4 of 4" in _msg or "of 4" in _msg)
+
+_readable = _presup("An annual learning budget exists [[%s]]." % _A)
+check("a well-formed list is readable and does not raise", _readable.readable)
+
+# The distinction that IA-189 is about: refused and unreadable are not the same.
+_refused = _presup("A parental leave policy exists [[none]].")
+check("a list that cites [[none]] is refused, not unreadable",
+      _refused.readable and not _refused.allowed)
+
+control("a well-formed presupposition list is called unreadable",
+        _raises(lambda: _presup("An annual learning budget exists [[%s]]." % _A),
+                rg.RewriteUnreadable),
+        "everything is unreadable, so the parse check tells you nothing")
+
+# --- the self-check the measurement refuses to start without ----------------
+
+check("the measurement's self-check recognises a correct list",
+      mrg.self_check(_A)[0])
+check("and it says so rather than returning a bare boolean",
+      "recognised" in mrg.self_check(_A)[1])
+
+# --- unreadable is counted apart from every refusal -------------------------
+
+_ulog = conv.Conversation(token_budget=1000, seed_ratio=4.0)
+_ulog.record(retrieval.Turn(question="q1", retrieved=True, supplied=(_A,),
+                            stage=conv.UNREADABLE_REWRITE, refusal="not a list"))
+_ulog.record(retrieval.Turn(question="q2", retrieved=True, supplied=(_A,),
+                            stage=conv.REFUSED_REWRITE, refusal="premise"))
+check("unreadable turns are counted", _ulog.unreadable == 1)
+check("and the summary keeps them apart from refusals",
+      "1 unreadable" in _ulog.line() and "1 refused on a premise" in _ulog.line())
+check("the summary says an unreadable turn is not a finding",
+      "not a finding" in _ulog.line())
+
+# --- IA-189 step 3: the presupposition check is a switch --------------------
+
+def _switch_turn(*responses, on):
+    try:
+        return chatmod.converse_turn(
+            _Q5, talk=_talk(), chat_model="m", embedder=_emb, store_obj=_S4,
+            fingerprint=_fp4, transport=_scripted(*responses), k=3,
+            threshold=None, known_ids=_known4, presupposition_check=on)[0]
+    except Exception:
+        return None
+
+
+# Two responses only: decide, then answer. If the presupposition call happens,
+# the script runs out and this comes back None.
+_off = _switch_turn(_called(_Q5),
+                    _said_msg("The budget is $2,500 [[%s]]." % _SUP5), on=False)
+check("with the check off, the model is never asked what the question presupposes",
+      getattr(_off, "stage", None) == retrieval.ANSWERED)
+
+_on = _switch_turn(_called(_Q5),
+                   _said_msg("the passage, pasted, with no citation at all"),
+                   _said_msg("The budget is $2,500 [[%s]]." % _SUP5), on=True)
+check("with the check on, an unparseable list is recorded as unreadable",
+      getattr(_on, "stage", None) == conv.UNREADABLE_REWRITE)
+
+# The deterministic half is not behind the switch.
+_word = _switch_turn(_called("and the second $2,500 tranche"),
+                     _said_msg("x"), on=False)
+check("the introduced-word check runs even with the presupposition check off",
+      getattr(_word, "stage", None) == conv.REFUSED_REWRITE)
+
+control("the presupposition check runs even when it is switched off",
+        _switch_turn(_called(_Q5),
+                     _said_msg("The budget is $2,500 [[%s]]." % _SUP5),
+                     on=False) is None,
+        "the switch does nothing, so turning it off does not protect anything")
 
 
 # ---------------------------------------------------------------------------

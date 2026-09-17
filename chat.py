@@ -38,7 +38,8 @@ from measure_window import DEFAULT_MODEL, RealTokenizer
 
 
 def converse_turn(question, *, talk, chat_model, embedder, store_obj,
-                  fingerprint, transport, k, threshold, known_ids):
+                  fingerprint, transport, k, threshold, known_ids,
+                  presupposition_check=False):
     """One turn of a conversation. Returns (Turn, detail).
 
     Order matters and is the order of Figure 2: everything that can refuse for
@@ -83,14 +84,38 @@ def converse_turn(question, *, talk, chat_model, embedder, store_obj,
 
     said = [t.question for t in talk.turns] + [question]
     texts = [h.record.text for h in found.result.hits]
-    rewrite = rg.check_rewrite(
-        query, said=said, supplied=found.supplied, supplied_texts=texts,
-        context=found.context(), model=chat_model, transport=transport,
-        known_ids=known_ids)
-    if not rewrite.allowed:
-        return retrieval.Turn(question=question, retrieved=True,
-                              supplied=found.supplied, stage=conv.REFUSED_REWRITE,
-                              refusal=rewrite.reason()), {"query": query}
+
+    # The deterministic half always runs: it asks the model for nothing.
+    introduced = rg.introduced_words(query, said=said, supplied_texts=texts)
+    if introduced:
+        return retrieval.Turn(
+            question=question, retrieved=True, supplied=found.supplied,
+            stage=conv.REFUSED_REWRITE,
+            refusal=rg.RewriteVerdict(False, True, introduced, None, None,
+                                      query).reason()), {"query": query}
+
+    # IA-189. The presupposition check is off by default. It is the only
+    # mechanism here that needs the model to perform a task, and on the first
+    # real run llama3.1:8b did not perform it: asked what its question took for
+    # granted, it answered the question. Until a measurement says a model can
+    # produce a presupposition list reliably, this stays opt-in, and what the
+    # gate guarantees without it is stated rather than implied.
+    if presupposition_check:
+        try:
+            rewrite = rg.check_rewrite(
+                query, said=said, supplied=found.supplied, supplied_texts=texts,
+                context=found.context(), model=chat_model, transport=transport,
+                known_ids=known_ids)
+        except rg.RewriteUnreadable as exc:
+            return retrieval.Turn(
+                question=question, retrieved=True, supplied=found.supplied,
+                stage=conv.UNREADABLE_REWRITE,
+                refusal=str(exc)), {"query": query}
+        if not rewrite.allowed:
+            return retrieval.Turn(
+                question=question, retrieved=True, supplied=found.supplied,
+                stage=conv.REFUSED_REWRITE,
+                refusal=rewrite.reason()), {"query": query}
 
     second = oc.chat(chat_model,
                      [{"role": "system",
@@ -121,6 +146,12 @@ def main(argv=None) -> int:
     ap.add_argument("--k", type=int, default=5)
     ap.add_argument("--threshold", type=float, default=None)
     ap.add_argument("--token-budget", type=int, default=4096)
+    ap.add_argument("--presupposition-check", action="store_true",
+                    help="IA-189: ask the model what its rewritten question "
+                         "presupposes and check those against the passages. OFF "
+                         "by default because the first real run showed the model "
+                         "does not produce that list. Measure it with "
+                         "measure_rewrite_gate.py before turning it on")
     ap.add_argument("--seed-ratio", type=float, required=True,
                     help="characters per token for the FIRST turn only. No "
                          "default: a constant nobody chose is what slice 2 is "
@@ -148,6 +179,8 @@ def main(argv=None) -> int:
     print(f"budget     {args.token_budget} tokens per turn, seed ratio "
           f"{args.seed_ratio} chars/token")
     print(f"threshold  {args.threshold if args.threshold is not None else 'none, stated explicitly'}")
+    print(f"rewrite    introduced-word check always on; presupposition check "
+          f"{'ON' if args.presupposition_check else 'OFF (IA-189)'}")
     print("\nAsk a question. Empty line or Ctrl-C to stop.\n")
 
     while True:
@@ -164,7 +197,8 @@ def main(argv=None) -> int:
                 question, talk=talk, chat_model=args.chat_model,
                 embedder=embedder, store_obj=store_obj, fingerprint=fingerprint,
                 transport=transport, k=args.k, threshold=args.threshold,
-                known_ids=known_ids)
+                known_ids=known_ids,
+                presupposition_check=args.presupposition_check)
         except (oc.OllamaUnavailable, oc.OllamaRefused) as exc:
             # Not recorded as anything. A turn that could not be read is not
             # evidence about the model.
