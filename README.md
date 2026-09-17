@@ -2,7 +2,8 @@
 
 A grounded RAG that runs on one laptop and refuses what it cannot cite.
 
-**Status: four slices of four.** This repository decides whether a document may
+**Status: four slices of four, plus the half of a fifth that needs no model.**
+This repository decides whether a document may
 enter the knowledge base, splits what gets in against the embedding model's real
 token window, keeps the vectors in two files that refuse a query built by a
 different embedder, retrieves with the score reaching the caller, and discards
@@ -33,6 +34,7 @@ python ingest_contract.py --documents documents  # check a real folder
 # these three need Ollama running on this machine
 python build_store.py  --documents documents --store store/demo
 python ask.py          --store store/demo --questions questions.json --verbose
+python chat.py         --store store/demo --seed-ratio 4.0   # never yet run
 python prove_the_detector_sees.py                # the control on the measurement itself
 ```
 
@@ -441,7 +443,7 @@ Measured on twelve questions and four documents. Not claimed to generalise.
 ```
 $ python test_invariants.py
 ...
-all 329 invariants hold, 19 of them controls
+all 393 invariants hold, 28 of them controls
 ```
 
 Both counts are printed rather than left to be counted by hand, because on the
@@ -463,7 +465,7 @@ the suite for some unrelated reason would prove nothing, so each one names the
 invariants it expects:
 
 ```
-baseline: all 329 invariants hold, 19 of them controls  (exit 0)
+baseline: all 393 invariants hold, 28 of them controls  (exit 0)
 
 mutation: the extension rule removed                          in ingest_contract.py
 mutation: a failed read returned as content, the upstream defect
@@ -475,7 +477,7 @@ mutation: prefix matching, the way a check like this usually fails open
 mutation: an abstention allowed with no passages supplied, so skipping pays again
 mutation: a malformed tool_calls read as 'did not retrieve'    in ollama_client.py
 ...
-all 28 mutations were caught. The suite can fail.
+all 38 mutations were caught. The suite can fail.
 ```
 
 Twice now the harness has refused a mutation of mine rather than counting it.
@@ -485,7 +487,7 @@ way that reddened the suite for an unrelated reason. Both times the mechanism
 caught it and not my attention, which is the entire argument for having the
 mechanism.
 
-Nineteen of the 329 are **controls**: they pass only when something is *not* true.
+Twenty-eight of the 393 are **controls**: they pass only when something is *not* true.
 Switching the extension rule off must make the mislabelled file pass, otherwise
 something else is rejecting it. A budget large enough to hold a whole document
 must still produce more than one chunk, otherwise the splitter is cutting on
@@ -609,11 +611,15 @@ Now ask what experiment verifies *"an ungrounded claim is refused."* Delete the 
   have answered. The gate's job is grounding, and abstaining too readily is
   unhelpful rather than ungrounded. The question set can measure it and nothing
   here does.
-- **There is no conversation.** Every call sends one system message and one user
-  message: no history, no follow-ups, no turn cap, and no interface a person can
-  sit in front of. Figure 2 of the target architecture draws three refusals and
-  two are built. Named as IA-186 and scoped as IA-187, rather than left as an
-  implied promise.
+- **The conversation is built and has never been run against a real model.** The
+  history, the turn cap, the rule that an abstention poisons the referent, the
+  rewrite gate and `chat.py` all exist, with 64 invariants, 9 controls and 10
+  mutations behind them. **Every one of those runs against a fake transport and a
+  stub embedder.** No conversational turn has yet reached Ollama, `chat.py` has
+  never been executed, and the two conversations registered as a prediction on
+  IA-187 have not happened. That is the same standard slices 1 to 3 were held to
+  before a model existed, and it is stated here because the alternative is the
+  sentence IA-186 was raised for.
 - It does not read PDFs, Word files or audio. Only `.md` and `.txt` are stored,
   so four of the sample corpus's thirteen documents reach the store. Docling is
   a later slice, and "unanswerable" in the question set means unanswerable from

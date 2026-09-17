@@ -903,7 +903,8 @@ check("an empty log says so instead of reporting a rate",
       "no rate to report" in _log.line())
 
 _log.record(retrieval.Turn(question="q1", retrieved=True,
-                           supplied=_r4.supplied, stage=retrieval.ANSWERED))
+                           supplied=_r4.supplied, stage=retrieval.ANSWERED,
+                           answer="ninety days"))
 _log.record(retrieval.Turn(question="q2", retrieved=True,
                            supplied=_r4.supplied, stage=retrieval.REFUSED_GATE,
                            refusal="cited a chunk it was not given"))
@@ -926,7 +927,7 @@ check("a turn that did not retrieve cannot carry supplied chunks", not _lied)
 
 try:
     retrieval.Turn(question="q", retrieved=False, supplied=(),
-                   stage=retrieval.ANSWERED)
+                   stage=retrieval.ANSWERED, answer="x")
     _mislabelled = True
 except retrieval.RetrievalError:
     _mislabelled = False
@@ -1329,7 +1330,7 @@ control("an abstention passes with no passages supplied",
 
 try:
     retrieval.Turn(question="q", retrieved=True, supplied=(),
-                   stage=retrieval.ABSTAINED)
+                   stage=retrieval.ABSTAINED, answer="x")
     _abs_empty = True
 except retrieval.RetrievalError:
     _abs_empty = False
@@ -1338,11 +1339,11 @@ check("a turn cannot be recorded as abstained with nothing supplied",
 
 _alog = retrieval.TurnLog()
 _alog.record(retrieval.Turn(question="q1", retrieved=True, supplied=(_A,),
-                            stage=retrieval.ANSWERED))
+                            stage=retrieval.ANSWERED, answer="a"))
 _alog.record(retrieval.Turn(question="q2", retrieved=True, supplied=(_A,),
-                            stage=retrieval.ABSTAINED))
+                            stage=retrieval.ABSTAINED, answer=gate.ABSTENTION_SENTENCE))
 _alog.record(retrieval.Turn(question="q3", retrieved=True, supplied=(_A,),
-                            stage=retrieval.ABSTAINED))
+                            stage=retrieval.ABSTAINED, answer=gate.ABSTENTION_SENTENCE))
 check("abstentions are counted", _alog.abstained == 2)
 check("abstentions are not added to answered", _alog.answered == 1)
 check("the summary reports both rather than one success rate",
@@ -1355,6 +1356,323 @@ check("a turn that looked and found nothing is recorded as abstained",
       _abs_turn.stage == retrieval.ABSTAINED)
 check("an abstained turn is a turn that retrieved", _abs_turn.retrieved is True)
 check("an abstained turn carries the passages it read", bool(_abs_turn.supplied))
+
+
+# ===========================================================================
+# slice 5, first half: the conversation, the cap, the referent and the rewrite
+# ===========================================================================
+#
+# None of this needs Ollama, a model or a network. The transports are fakes and
+# the embedder is a stub, exactly as slices 1 to 3 were built and proved before
+# a model existed. What is NOT covered here is whether a real model produces a
+# rewrite these rules judge correctly, and nothing below should be read as
+# saying it does.
+
+import inspect as _inspect
+
+import conversation as conv
+import rewrite_gate as rg
+
+_ANS = "$2,500 [[%s]]" % _A
+
+
+def _answered(q="what is the learning budget", ans="ninety days"):
+    return retrieval.Turn(question=q, retrieved=True, supplied=(_A,),
+                          stage=retrieval.ANSWERED, answer=ans)
+
+
+def _abstained(q="what is the parental leave policy"):
+    return retrieval.Turn(question=q, retrieved=True, supplied=(_A,),
+                          stage=retrieval.ABSTAINED,
+                          answer=gate.ABSTENTION_SENTENCE)
+
+
+# --- the turn a conversation carries ---------------------------------------
+
+check("a turn recorded as answered must carry what the user saw",
+      _raises(lambda: retrieval.Turn(question="q", retrieved=True, supplied=(_A,),
+                                     stage=retrieval.ANSWERED),
+              retrieval.RetrievalError))
+check("a refused turn may not carry an answer, because its text was discarded",
+      _raises(lambda: retrieval.Turn(question="q", retrieved=True, supplied=(_A,),
+                                     stage=retrieval.REFUSED_GATE, answer="x"),
+              retrieval.RetrievalError))
+
+# --- the cap: a ratio that is measured rather than written down -------------
+
+_sig5 = _inspect.signature(conv.Conversation.__init__)
+check("the seed ratio has no default, so it cannot be a constant nobody chose",
+      _sig5.parameters["seed_ratio"].default is _inspect.Parameter.empty)
+
+check("a budget that cannot hold a question is refused",
+      _raises(lambda: conv.Conversation(token_budget=0, seed_ratio=4.0),
+              conv.ConversationError))
+check("a ratio of zero is not a ratio",
+      _raises(lambda: conv.Conversation(token_budget=100, seed_ratio=0),
+              conv.ConversationError))
+
+_c = conv.Conversation(token_budget=100, seed_ratio=4.0)
+check("with nothing measured, the ratio is the seed", _c.ratio == 4.0)
+check("and it says the seed is all it has", "seed" in _c.ratio_source)
+
+_fits = _c.check_cap("x" * 200)
+check("a prompt inside the budget fits", _fits.fits)
+check("and the estimate is characters over the ratio", _fits.estimated_tokens == 50)
+
+_over = _c.check_cap("x" * 800)
+check("a prompt over the budget is refused", not _over.fits)
+check("the refusal says nothing was sent", "Nothing was sent" in _over.reason())
+check("the refusal names the ratio it used and where it came from",
+      "4.00" in _over.reason() and "seed" in _over.reason())
+
+# The seed was wrong by a factor of two. One real turn replaces it.
+_c.record_prompt(chars=800, tokens=100, estimated=200)
+check("one measured turn replaces the seed", _c.ratio == 8.0)
+check("and the source says so", "measured over 1 turn" in _c.ratio_source)
+check("the estimator's own error is kept, not discarded",
+      _c.samples[-1].error == -100)
+
+_c.record_prompt(chars=900, tokens=150, estimated=112)
+check("the ratio is over all measurements, not the last one",
+      abs(_c.ratio - (1700 / 250)) < 1e-9)
+check("the worst underestimate is reported, not the average",
+      _c.worst_underestimate == 38)
+check("a measurement with no tokens is not a measurement",
+      _raises(lambda: _c.record_prompt(chars=10, tokens=0), conv.ConversationError))
+
+control("a prompt far over the budget still fits",
+        conv.Conversation(token_budget=10, seed_ratio=4.0).check_cap("x" * 4000).fits,
+        "the cap admits everything, so none of the refusals above prove anything")
+control("a prompt well inside the budget is refused too",
+        not conv.Conversation(token_budget=1000, seed_ratio=4.0).check_cap("x" * 40).fits)
+
+# --- an abstention poisons the referent ------------------------------------
+
+_fresh = conv.Conversation(token_budget=1000, seed_ratio=4.0)
+check("the first question of a conversation refers to nothing and is allowed",
+      _fresh.check_referent("how many weeks is that?").allowed)
+
+_after_answer = conv.Conversation(token_budget=1000, seed_ratio=4.0)
+_after_answer.record(_answered())
+check("a follow-up after an answered turn is allowed",
+      _after_answer.check_referent("can it be used for conferences?").allowed)
+
+_after_abstention = conv.Conversation(token_budget=1000, seed_ratio=4.0)
+_after_abstention.record(_abstained())
+_ref = _after_abstention.check_referent("how many weeks is that?")
+check("a follow-up referring to an abstained turn is refused", not _ref.allowed)
+check("and the refusal says there is nothing to refer to",
+      "nothing to refer to" in _ref.reason())
+check("the decision records which referring words it found",
+      "that" in _ref.referring_words)
+check("the refusal names what the previous turn ended in",
+      _ref.previous_stage == retrieval.ABSTAINED)
+
+check("a self-contained question after an abstention is allowed",
+      _after_abstention.check_referent("what is the PTO policy?").allowed)
+
+for _stage, _name in ((retrieval.REFUSED_GATE, "a gate refusal"),
+                      (retrieval.SKIPPED, "a skipped turn"),
+                      (retrieval.REFUSED_THRESHOLD, "a threshold refusal")):
+    _co = conv.Conversation(token_budget=1000, seed_ratio=4.0)
+    _co.record(retrieval.Turn(question="q", retrieved=_stage != retrieval.SKIPPED,
+                              supplied=() if _stage == retrieval.SKIPPED else (_A,),
+                              stage=_stage, refusal="because"))
+    check(f"{_name} cannot be referred to either",
+          not _co.check_referent("how many weeks is that?").allowed)
+
+control("a follow-up after an answered turn is refused too",
+        not _after_answer.check_referent("can it be used for conferences?").allowed,
+        "the rule refuses every follow-up, so the conversation is unusable and "
+        "none of the refusals above are about the abstention")
+control("a fresh, self-contained question after an abstention is refused",
+        not _after_abstention.check_referent("what is the PTO policy?").allowed)
+
+# --- the transcript replays what was shown, not what was generated ---------
+
+_hist = conv.Conversation(token_budget=1000, seed_ratio=4.0)
+_hist.record(_answered(q="q1", ans="ninety days [[%s]]" % _A))
+_hist.record(retrieval.Turn(question="q2", retrieved=True, supplied=(_A,),
+                            stage=retrieval.REFUSED_GATE,
+                            refusal="cited what it was not given"))
+_hist.record(_abstained(q="q3"))
+_tr = _hist.transcript()
+check("a refused turn is not part of the conversation's content",
+      not any(m["content"] == "q2" for m in _tr))
+check("an answered turn and an abstained one both are", len(_tr) == 4)
+check("the transcript alternates user and assistant",
+      [m["role"] for m in _tr] == ["user", "assistant", "user", "assistant"])
+check("an abstention replays the sentence the system wrote",
+      _tr[3]["content"] == gate.ABSTENTION_SENTENCE)
+
+# --- the rewrite gate: a word the conversation never contained -------------
+
+_said = ["what is the annual learning budget?", "can it be used for conferences?"]
+_passages = ["Every employee receives an annual $2,500 learning budget for: "
+             "online courses, conference attendance, books and subscriptions."]
+
+check("a rewrite built from what was said introduces nothing",
+      rg.introduced_words("can the annual learning budget be used for conferences?",
+                          said=_said, supplied_texts=_passages) == ())
+check("a word from a supplied passage is not an introduction",
+      rg.introduced_words("what about books and subscriptions?",
+                          said=_said, supplied_texts=_passages) == ())
+# This asserted ("tranche",) first and failed. The check returns
+# ("second", "tranche"), and it is right: "second" is introduced too, and it is
+# the half of the invented premise that does the actual work. "A tranche" is
+# odd phrasing; "the SECOND tranche" is the assertion that a first one existed.
+# The assertion was wrong and the code was not, which is the second time today.
+check("every invented word is caught, not only the odd-looking one",
+      rg.introduced_words("and the second $2,500 tranche?",
+                          said=_said, supplied_texts=_passages)
+      == ("second", "tranche"))
+check("a plural of a word already present is not an introduction",
+      rg.introduced_words("what are the budgets for?",
+                          said=_said, supplied_texts=_passages) == ())
+check("function words are never introductions",
+      rg.introduced_words("so, about that, was it for the same?",
+                          said=_said, supplied_texts=_passages) == ())
+
+control("an invented word passes the introduction check",
+        rg.introduced_words("and the second $2,500 tranche?",
+                            said=_said, supplied_texts=_passages) == (),
+        "nothing is ever an introduction, so the check is blind")
+control("a rewrite built only from what was said is flagged anyway",
+        rg.introduced_words("can the annual learning budget be used for conferences?",
+                            said=_said, supplied_texts=_passages) != ())
+
+# --- the rewrite gate: a cited presupposition ------------------------------
+
+def _rw(response_text, rewrite="can the annual learning budget be used for conferences?"):
+    return rg.check_rewrite(
+        rewrite, said=_said, supplied=(_A,), supplied_texts=_passages,
+        context="[[%s]] %s" % (_A, _passages[0]), model="m",
+        transport=_scripted(_said_msg(response_text)), known_ids=[_A])
+
+
+def _said_msg(text):
+    return {"done": True, "message": {"content": text}}
+
+
+_ok = _rw("An annual learning budget exists [[%s]]." % _A)
+check("a rewrite whose presuppositions are all grounded is allowed", _ok.allowed)
+check("and it carries the presuppositions it was judged on", _ok.presuppositions)
+
+_bad = _rw("A parental leave policy exists [[none]].")
+check("a rewrite resting on an unsupported premise is refused", not _bad.allowed)
+check("and the refusal says the premise was never established",
+      "no supplied passage supports" in _bad.reason())
+check("the refusal shows the rewrite that caused it",
+      "learning budget" in _bad.reason())
+
+# The inversion, stated as an invariant because it is the subtle part.
+check("the same [[none]] text would PASS the answer gate as an abstention",
+      gate.check("A parental leave policy exists [[none]].", (_A,)).passed)
+check("but is refused as a presupposition, because the two texts play "
+      "different roles", not _bad.allowed)
+
+# The cheap check runs first, so a refused turn costs no model call.
+_no_call = rg.check_rewrite(
+    "and the second $2,500 tranche?", said=_said, supplied=(_A,),
+    supplied_texts=_passages, context="", model="m",
+    transport=_scripted(), known_ids=[_A])
+check("an introduced word is refused without asking the model anything",
+      not _no_call.allowed and _no_call.presuppositions is None)
+
+control("a rewrite whose presuppositions are all grounded is refused too",
+        not _rw("An annual learning budget exists [[%s]]." % _A).allowed,
+        "the rewrite gate refuses everything, so the conversation cannot "
+        "proceed and none of the refusals above are about the premise")
+control("a rewrite resting on an unsupported premise is allowed",
+        _rw("A parental leave policy exists [[none]].").allowed)
+
+
+# --- the whole conversational turn, where four parts become a count --------
+
+import chat as chatmod
+
+_Q5 = "what is the learning budget"
+_probe5 = retrieval.retrieve(_Q5, embedder=_emb, store_obj=_S4,
+                             fingerprint=_fp4, k=3, threshold=None)
+_SUP5 = _probe5.supplied[0]
+
+
+def _cturn(talk, *responses, budget=4096, seed=4.0, k=3, threshold=None):
+    return chatmod.converse_turn(
+        _Q5, talk=talk, chat_model="m", embedder=_emb, store_obj=_S4,
+        fingerprint=_fp4, transport=_scripted(*responses), k=k,
+        threshold=threshold, known_ids=_known4)
+
+
+def _talk(budget=4096, seed=4.0):
+    return conv.Conversation(token_budget=budget, seed_ratio=seed)
+
+
+# A clean turn: decide to retrieve, presuppositions grounded, answer cited.
+_clean = _cturn(
+    _talk(),
+    _called(_Q5),
+    _said_msg("A learning budget exists [[%s]]." % _SUP5),
+    _said_msg("The budget is $2,500 [[%s]]." % _SUP5))
+check("a clean conversational turn is answered", _clean[0].stage == retrieval.ANSWERED)
+check("and it records what the user was shown", _clean[0].answer is not None)
+
+# The cap refuses before anything is sent, and the empty script is the proof: if
+# the turn reaches the model it asks a transport with nothing queued. That must
+# come back as a red assertion rather than an exception, or a mutation removing
+# the cap would abort the suite and be recorded as "caught" for the wrong reason.
+def _safe_turn(question, talk, *responses, budget=None):
+    try:
+        return chatmod.converse_turn(
+            question, talk=talk, chat_model="m", embedder=_emb, store_obj=_S4,
+            fingerprint=_fp4, transport=_scripted(*responses), k=3,
+            threshold=None, known_ids=_known4)[0]
+    except Exception:
+        return None
+
+
+_capped = _safe_turn(_Q5, _talk(budget=2))
+check("a turn over the cap is refused",
+      getattr(_capped, "stage", None) == conv.REFUSED_CAP)
+check("and the model was never asked, because the script had no answers ready",
+      "Nothing was sent" in (getattr(_capped, "refusal", "") or ""))
+
+# The referent refuses before anything is sent, too.
+_poisoned = _talk()
+_poisoned.record(_abstained())
+_ref_turn = _safe_turn("how many weeks is that?", _poisoned)
+check("a follow-up on an abstained turn is refused at the referent",
+      getattr(_ref_turn, "stage", None) == conv.REFUSED_REFERENT)
+check("and that refusal also costs no model call",
+      "nothing to refer to" in (getattr(_ref_turn, "refusal", "") or ""))
+
+# The rewrite gate refuses after retrieval and before generation.
+_drifted = _cturn(
+    _talk(),
+    _called("how many weeks of parental leave are offered"),
+    _said_msg("A parental leave policy exists [[none]]."))
+check("a rewrite resting on an unsupported premise stops the turn",
+      _drifted[0].stage == conv.REFUSED_REWRITE)
+check("and it stops before an answer is generated, with the script still holding one",
+      _drifted[0].answer is None)
+
+# The measured ratio comes from the model's own count.
+_measured = _talk()
+_cturn(_measured,
+       dict(_called(_Q5), prompt_eval_count=25),
+       _said_msg("A learning budget exists [[%s]]." % _SUP5),
+       _said_msg("The budget is $2,500 [[%s]]." % _SUP5))
+check("the conversation learns its ratio from prompt_eval_count",
+      len(_measured.samples) == 1 and _measured.samples[0].tokens == 25)
+check("and it keeps how far its own estimate was out",
+      _measured.samples[0].error is not None)
+
+control("a clean conversational turn is refused anyway",
+        _cturn(_talk(), _called(_Q5),
+               _said_msg("A learning budget exists [[%s]]." % _SUP5),
+               _said_msg("The budget is $2,500 [[%s]]." % _SUP5))[0].stage
+        != retrieval.ANSWERED,
+        "nothing can get through the four refusals, so none of them prove anything")
 
 
 # ---------------------------------------------------------------------------

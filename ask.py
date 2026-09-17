@@ -143,7 +143,8 @@ def one_turn(question, *, chat_model, embedder, store_obj, fingerprint,
         stage = retrieval.REFUSED_GATE
     turn = retrieval.Turn(
         question=question, retrieved=True, supplied=found.supplied,
-        stage=stage, refusal=None if verdict.passed else verdict.reason())
+        stage=stage, refusal=None if verdict.passed else verdict.reason(),
+        answer=verdict.answer if verdict.passed else None)
     return turn, {"seconds": time.time() - started, "text": text,
                   "gate": verdict, "query": query, "scores": found.scores}
 

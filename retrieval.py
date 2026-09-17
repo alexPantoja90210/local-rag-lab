@@ -189,12 +189,29 @@ class Turn:
     stage: str
     refusal: str | None = None
 
+    # IA-187. What the user actually saw. A conversation that replays its own
+    # history has to replay what was shown, not what was generated: on an
+    # abstention those are different strings, and on a refusal the generated
+    # text was discarded on purpose. Reconstructing it later from the stage
+    # would be a second source of truth for something already decided.
+    answer: str | None = None
+
     def __post_init__(self) -> None:
         if not self.retrieved and self.supplied:
             raise RetrievalError(
                 "a turn that did not retrieve cannot have supplied chunks. "
                 "Something handed the model passages it did not ask for, and "
                 "the skipped-retrieval count would be a lie")
+        if self.stage in (ANSWERED, ABSTAINED) and self.answer is None:
+            raise RetrievalError(
+                f"a turn recorded as {self.stage} with no answer. Something was "
+                "shown to the user and this turn does not know what, so the "
+                "conversation cannot replay itself honestly")
+        if self.stage not in (ANSWERED, ABSTAINED) and self.answer is not None:
+            raise RetrievalError(
+                f"a turn recorded as {self.stage} is carrying an answer. A "
+                "refused turn's text was discarded, and keeping it here is how "
+                "it comes back")
         if self.stage in (ANSWERED, ABSTAINED) and not self.supplied:
             raise RetrievalError(
                 f"a turn recorded as {self.stage} with nothing supplied. An "

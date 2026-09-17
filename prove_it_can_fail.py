@@ -249,7 +249,86 @@ MUTATIONS = [
         ["an abstention's answer is written by the system, not by the model",
          "the same sentence whatever the model wrote"],
     ),
+(
+        "conversation.py",
+        "the cap that always fits, so nothing is ever refused before sending",
+        "            fits=estimated <= self.token_budget,",
+        "            fits=True,",
+        ["a prompt over the budget is refused",
+         "the refusal says nothing was sent"],
+    ),
+    (
+        "conversation.py",
+        "the seed kept forever, so the ratio stops being measured",
+        "        if not self.samples:\n            return self.seed_ratio",
+        "        if True:\n            return self.seed_ratio",
+        ["one measured turn replaces the seed",
+         "the ratio is over all measurements, not the last one"],
+    ),
+    (
+        "conversation.py",
+        "an abstention no longer poisons the referent, IA-187",
+        "        return ReferentDecision(False, words, previous.stage)",
+        "        return ReferentDecision(True, words, previous.stage)",
+        ["a follow-up referring to an abstained turn is refused",
+         "a gate refusal cannot be referred to either"],
+    ),
+    (
+        "conversation.py",
+        "the transcript replays refused turns, handing back the withheld premise",
+        "            if turn.stage not in (retrieval.ANSWERED, retrieval.ABSTAINED):\n                continue",
+        "            if False:\n                continue",
+        ["a refused turn is not part of the conversation's content",
+         "an answered turn and an abstained one both are"],
+    ),
+    (
+        "retrieval.py",
+        "a turn allowed to be answered without recording what was shown",
+        "        if self.stage in (ANSWERED, ABSTAINED) and self.answer is None:",
+        "        if False:",
+        ["a turn recorded as answered must carry what the user saw"],
+    ),
+    (
+        "rewrite_gate.py",
+        "the introduction check made blind",
+        "    return tuple(new)",
+        "    return ()",
+        ["every invented word is caught, not only the odd-looking one"],
+    ),
+    (
+        "rewrite_gate.py",
+        "the inversion removed: an ungrounded premise read as an honest abstention",
+        "    allowed = verdict.passed and not verdict.abstained",
+        "    allowed = verdict.passed",
+        ["a rewrite resting on an unsupported premise is refused",
+         "and the refusal says the premise was never established"],
+    ),
+(
+        "chat.py",
+        "the cap consulted and then ignored, so the call happens anyway",
+        "    if not cap.fits:",
+        "    if False:",
+        ["a turn over the cap is refused",
+         "and the model was never asked, because the script had no answers ready"],
+    ),
+    (
+        "chat.py",
+        "the referent rule consulted and then ignored",
+        "    if not referent.allowed:",
+        "    if False:",
+        ["a follow-up on an abstained turn is refused at the referent",
+         "and that refusal also costs no model call"],
+    ),
+    (
+        "chat.py",
+        "the rewrite gate consulted and then ignored, so the drift reaches an answer",
+        "    if not rewrite.allowed:",
+        "    if False:",
+        ["a rewrite resting on an unsupported premise stops the turn"],
+    ),
 ]
+
+
 
 
 
