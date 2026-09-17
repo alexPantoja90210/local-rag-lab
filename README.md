@@ -125,8 +125,9 @@ unproven.
 
 ## Provenance and licences
 
-This repository is original code. Two upstream projects were read and audited,
-and the findings above are about them.
+This repository is **original code, MIT licensed** (see `LICENSE`). It is not a
+fork: nothing is copied from either upstream project. Two of them were read and
+audited, and the findings above are about them.
 
 - `coleam00/ottomator-agents/docling-rag-agent` — **MIT**, Copyright (c) 2024
   Cole Medin. The architecture this project takes forward, and the source of the
