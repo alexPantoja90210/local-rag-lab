@@ -20,6 +20,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import chunker
 import make_fixtures
 from ingest_contract import (
     ConversionFailed,
@@ -219,6 +220,217 @@ check("scanning is deterministic",
 
 check("the scan skips files the pipeline would never pick up",
       all(v.path.suffix.lower() != ".py" for v in check_folder(HERE)))
+
+
+# ===========================================================================
+# the chunker
+# ===========================================================================
+
+SAMPLES = {
+    "prose": (
+        "Scaled Dot-Product Attention\n\n"
+        "We call our particular attention \"Scaled Dot-Product Attention\". The "
+        "input consists of queries and keys of dimension dk.\n\n"
+        "We compute the dot products of the query with all keys, divide each by "
+        "the square root of dk, and apply a softmax.\n"
+    ),
+    "one long word": "Supercalifragilisticexpialidocious" * 4,
+    "no boundaries at all": "x" * 300,
+    "single character": "x",
+    "whitespace only": "   \n\n   \n",
+    "unicode": "Índice de contenidos. Sección uno. Sección dos. Ñandú, café, año.\n" * 3,
+}
+
+for _tok in chunker.SUITE_TOKENIZERS:
+    _n = _tok.name
+    for _label, _text in SAMPLES.items():
+        _chunks = chunker.chunk_text(_text, document_id="d", tokenizer=_tok,
+                                     overlap_tokens=2)
+
+        check(f"[{_n}] no chunk exceeds the budget, on {_label!r}",
+              all(c.token_count <= _tok.budget for c in _chunks),
+              f"max was {max((c.token_count for c in _chunks), default=0)} "
+              f"against a budget of {_tok.budget}")
+
+        check(f"[{_n}] the spans leave no gap, on {_label!r}",
+              chunker.coverage_gaps(_text, _chunks) == [],
+              f"gaps: {chunker.coverage_gaps(_text, _chunks)}")
+
+        _rebuilt = "".join(_text[c.char_start:c.char_end]
+                           for c in sorted(_chunks, key=lambda c: c.char_start))
+        check(f"[{_n}] the spans rebuild the source exactly, on {_label!r}",
+              _rebuilt == _text,
+              "nothing may be dropped, and nothing may be truncated")
+
+        check(f"[{_n}] every chunk moves forward, on {_label!r}",
+              all(b.char_start > a.char_start for a, b in zip(_chunks, _chunks[1:])),
+              "a chunk that does not advance is an infinite loop waiting to happen")
+
+        check(f"[{_n}] every chunk records its tokenizer and budget, on {_label!r}",
+              all(c.tokenizer == _tok.name and c.budget == _tok.budget
+                  for c in _chunks))
+
+        check(f"[{_n}] every split level is one the module declares, on {_label!r}",
+              all(c.split_level in chunker.SPLIT_LEVELS for c in _chunks))
+
+# --- the budget is what drives the packing ---------------------------------
+# Control. With a budget large enough to hold everything, the splitter must
+# produce exactly one chunk. If it still split, it is splitting on structure
+# and the budget invariants above would pass without the budget doing any work.
+
+_prose = SAMPLES["prose"]
+_roomy = chunker.WordTokenizer(budget=10_000)
+control("a budget that fits everything still produces more than one chunk",
+        len(chunker.chunk_text(_prose, document_id="d", tokenizer=_roomy)) > 1,
+        "the splitter must be driven by the budget, not by paragraph structure")
+
+_tight = chunker.WordTokenizer(budget=4)
+check("a tighter budget produces more chunks than a generous one",
+      len(chunker.chunk_text(_prose, document_id="d", tokenizer=_tight))
+      > len(chunker.chunk_text(_prose, document_id="d", tokenizer=chunker.WordTokenizer(20))))
+
+# --- a word longer than the whole budget -----------------------------------
+
+_giant = "a" * 500
+_cg = chunker.CharGroupTokenizer(budget=4, chars_per_token=4)
+_gc = chunker.chunk_text(_giant, document_id="d", tokenizer=_cg)
+check("a single word longer than the budget is split, not dropped",
+      "".join(_giant[c.char_start:c.char_end] for c in _gc) == _giant)
+check("and the hard split is recorded rather than silent",
+      "character" in {c.split_level for c in _gc},
+      f"levels seen: {sorted({c.split_level for c in _gc})}")
+check("the report counts how many chunks needed a hard split",
+      chunker.report(_gc, _cg).by_level["character"] > 0,
+      "a compromise nobody counts is a compromise nobody can argue with")
+
+# --- empty input ------------------------------------------------------------
+
+check("empty text produces no chunks at all, not one empty chunk",
+      chunker.chunk_text("", document_id="d",
+                         tokenizer=chunker.WordTokenizer(8)) == [])
+
+# --- identity ---------------------------------------------------------------
+
+_t = chunker.WordTokenizer(8)
+_a = chunker.chunk_text(_prose, document_id="d", tokenizer=_t)
+_b = chunker.chunk_text(_prose, document_id="d", tokenizer=_t)
+check("chunking the same text twice gives the same ids",
+      [c.chunk_id for c in _a] == [c.chunk_id for c in _b],
+      "a fresh uuid per run is what both upstream projects do, and it removes "
+      "the one property an explicit id exists to provide")
+
+_appended = chunker.chunk_text(_prose + " and one more sentence here.",
+                               document_id="d", tokenizer=_t)
+check("appending text leaves the earlier chunks' ids untouched",
+      [c.chunk_id for c in _appended][:len(_a) - 1] == [c.chunk_id for c in _a][:len(_a) - 1],
+      "this is the property a content-derived id exists to give: a re-ingest "
+      "updates in place instead of duplicating")
+check("but the document as a whole gets a different set of ids",
+      {c.chunk_id for c in _appended} != {c.chunk_id for c in _a})
+
+_edited = chunker.chunk_text("Totally different opening. " + _prose,
+                             document_id="d", tokenizer=_t)
+check("changing the first chunk changes its id",
+      _edited[0].chunk_id != _a[0].chunk_id)
+
+check("the same text under a different tokenizer gives different ids",
+      _a[0].chunk_id != chunker.chunk_text(
+          _prose, document_id="d",
+          tokenizer=chunker.SubwordishTokenizer(8))[0].chunk_id,
+      "chunks built for one embedder must be distinguishable from another's")
+
+check("a different document id gives different ids",
+      _a[0].chunk_id != chunker.chunk_text(
+          _prose, document_id="other", tokenizer=_t)[0].chunk_id)
+
+# --- the fingerprint that catches a store built for another embedder --------
+
+check("the same tokenizer and budget fingerprint the same",
+      chunker.pack_fingerprint(chunker.WordTokenizer(8))
+      == chunker.pack_fingerprint(chunker.WordTokenizer(8)))
+
+check("a changed budget changes the fingerprint",
+      chunker.pack_fingerprint(chunker.WordTokenizer(8))
+      != chunker.pack_fingerprint(chunker.WordTokenizer(9)))
+
+check("a changed tokenizer changes the fingerprint",
+      chunker.pack_fingerprint(chunker.WordTokenizer(8))
+      != chunker.pack_fingerprint(chunker.SubwordishTokenizer(8)))
+
+# --- overlap ----------------------------------------------------------------
+
+_ov = chunker.chunk_text(_prose, document_id="d", tokenizer=chunker.WordTokenizer(16),
+                         overlap_tokens=3)
+check("overlap does not push any chunk over budget",
+      all(c.token_count <= 16 for c in _ov))
+check("overlap does not disturb the tiling",
+      chunker.coverage_gaps(_prose, _ov) == [])
+
+_raised = False
+try:
+    chunker.chunk_text(_prose, document_id="d",
+                       tokenizer=chunker.WordTokenizer(8), overlap_tokens=8)
+except ValueError:
+    _raised = True
+check("an overlap as large as the budget is refused, not looped on", _raised,
+      "it would never advance, and a hang is worse than an error")
+
+_raised = False
+try:
+    chunker.chunk_text(_prose, document_id="d",
+                       tokenizer=chunker.WordTokenizer(8), overlap_tokens=-1)
+except ValueError:
+    _raised = True
+check("a negative overlap is refused", _raised)
+
+# --- a budget nothing can fit ----------------------------------------------
+
+class _ImpossibleTokenizer:
+    """A usable budget, but every string costs more than it."""
+
+    name = "impossible"
+    budget = 1
+
+    def count(self, text: str) -> int:
+        return len(text) + 1
+
+
+_raised = False
+try:
+    chunker.chunk_text("anything", document_id="d", tokenizer=_ImpossibleTokenizer())
+except chunker.BudgetExceeded:
+    _raised = True
+check("a budget that cannot hold one character raises rather than truncating",
+      _raised,
+      "silently returning a shortened chunk is the upstream behaviour this "
+      "module exists to make impossible")
+
+
+class _ZeroBudgetTokenizer:
+    name = "zero-budget"
+    budget = 0
+
+    def count(self, text: str) -> int:
+        return len(text)
+
+
+_raised = False
+try:
+    chunker.chunk_text("anything", document_id="d", tokenizer=_ZeroBudgetTokenizer())
+except ValueError:
+    _raised = True
+check("a tokenizer reporting a budget below one is refused up front", _raised,
+      "found by this suite: the overlap guard used to fire first and blame "
+      "the overlap for a budget that was the real problem")
+
+# --- the report -------------------------------------------------------------
+
+_rep = chunker.report(_a, _t)
+check("the report never shows a chunk over budget", _rep.over_budget == 0)
+check("the report counts every chunk exactly once",
+      sum(_rep.by_level.values()) == _rep.chunks)
+check("the report carries the fingerprint of the packing",
+      _rep.fingerprint == chunker.pack_fingerprint(_t))
 
 # ---------------------------------------------------------------------------
 

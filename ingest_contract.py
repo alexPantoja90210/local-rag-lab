@@ -27,7 +27,7 @@ the same reason the hashed-bag-of-words backend stayed in the previous project.
 from __future__ import annotations
 
 import argparse
-import os
+
 import sys
 import zipfile
 from dataclasses import dataclass

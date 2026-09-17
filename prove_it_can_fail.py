@@ -2,7 +2,7 @@
 Prove the suite can go red.
 
 A suite that has only ever been seen passing is indistinguishable from one that
-cannot fail. This script breaks the contract on purpose, three ways, in a
+cannot fail. This script breaks the code on purpose, several ways, in a
 throwaway copy of the tree, and asserts that the suite notices each time and
 names the right invariants.
 
@@ -20,13 +20,12 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).parent
-TARGET = "ingest_contract.py"
-
-# Each mutation is a (find, replace) pair applied to the contract, plus the
-# invariants that must go red as a result. Naming them matters: a mutation
-# that reddens the suite for some unrelated reason proves nothing.
+# Each mutation names the file it breaks, a (find, replace) pair, and the
+# invariants that must go red as a result. Naming the invariants matters: a
+# mutation that reddens the suite for some unrelated reason proves nothing.
 MUTATIONS = [
     (
+        "ingest_contract.py",
         "the extension rule removed",
         "    if detected != declared:",
         "    if False:",
@@ -35,6 +34,7 @@ MUTATIONS = [
          "every fixture in bad/ is rejected"],
     ),
     (
+        "ingest_contract.py",
         "a failed read returned as content, the upstream defect",
         "    except Exception as exc:  # re-raised, never swallowed, never substituted\n"
         "        raise ConversionFailed(f\"{path.name}: the reader failed: {exc!r}\") from exc",
@@ -43,10 +43,42 @@ MUTATIONS = [
         ["a reader that raises produces a refusal, not a string"],
     ),
     (
+        "ingest_contract.py",
         "a bare except reintroduced",
         "    except (zipfile.BadZipFile, OSError):",
         "    except:",
         ["the contract contains no bare except (secondary, source-level)"],
+    ),
+    (
+        "chunker.py",
+        "the token budget ignored while packing",
+        "            if tokenizer.count(text[:end]) > budget:\n                break",
+        "            if False:\n                break",
+        ["[stub-word-16] no chunk exceeds the budget, on 'prose'",
+         "[stub-subword-4-12] no chunk exceeds the budget, on 'prose'"],
+    ),
+    (
+        "chunker.py",
+        "the tail of the document dropped, the truncation this module forbids",
+        "        cursor += take          # strictly positive, so this always terminates",
+        "        cursor += take\n        if len(chunks) >= 2:\n            break",
+        ["[stub-word-16] the spans leave no gap, on 'prose'",
+         "[stub-word-16] the spans rebuild the source exactly, on 'prose'"],
+    ),
+    (
+        "chunker.py",
+        "a fresh id per run, the upstream defect",
+        "        h = hashlib.sha256()",
+        "        import uuid\n        return uuid.uuid4().hex[:32]\n        h = hashlib.sha256()",
+        ["chunking the same text twice gives the same ids"],
+    ),
+    (
+        "chunker.py",
+        "the split level no longer recorded",
+        "            return taken, SPLIT_LEVELS[idx]",
+        "            return taken, SPLIT_LEVELS[0]",
+        ["and the hard split is recorded rather than silent",
+         "the report counts how many chunks needed a hard split"],
     ),
 ]
 
@@ -69,23 +101,24 @@ def main() -> int:
 
     problems: list[str] = []
 
-    for name, find, replace, must_fail in MUTATIONS:
+    for target, name, find, replace, must_fail in MUTATIONS:
         with tempfile.TemporaryDirectory() as tmp:
             lab = Path(tmp) / "lab"
             shutil.copytree(HERE, lab, ignore=shutil.ignore_patterns(
                 "__pycache__", ".git", "fixtures"))
 
-            source = (lab / TARGET).read_text(encoding="utf-8")
+            source = (lab / target).read_text(encoding="utf-8")
             if find not in source:
-                problems.append(f"{name}: the text to mutate is no longer in {TARGET}")
+                problems.append(f"{name}: the text to mutate is no longer in {target}")
                 print(f"SKIP  {name}\n        the anchor has moved, so this proves nothing\n")
                 continue
-            (lab / TARGET).write_text(source.replace(find, replace, 1), encoding="utf-8")
+            (lab / target).write_text(source.replace(find, replace, 1), encoding="utf-8")
 
             code, out = run_suite(lab)
             reddened = [line[5:] for line in out.splitlines() if line.startswith("FAIL ")]
 
             print(f"mutation: {name}")
+            print(f"  in                   {target}")
             print(f"  suite exit code      {code}   (must be non-zero)")
             print(f"  invariants gone red  {len(reddened)}")
 
