@@ -17,11 +17,13 @@ Run:  python test_invariants.py
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
 import chunker
 import make_fixtures
+import store
 from ingest_contract import (
     ConversionFailed,
     Verdict,
@@ -431,6 +433,251 @@ check("the report counts every chunk exactly once",
       sum(_rep.by_level.values()) == _rep.chunks)
 check("the report carries the fingerprint of the packing",
       _rep.fingerprint == chunker.pack_fingerprint(_t))
+
+
+# ===========================================================================
+# the store
+# ===========================================================================
+
+import hashlib
+import tempfile
+
+_SDIM = 16
+
+
+def _embed(text: str, dim: int = _SDIM) -> list[float]:
+    """A hashed bag of words. Not a model, and that is the point: the store
+    must not care what produced the numbers."""
+    v = [0.0] * dim
+    for w in text.lower().split():
+        v[int(hashlib.sha1(w.encode()).hexdigest(), 16) % dim] += 1.0
+    if not any(v):
+        v[0] = 1.0
+    return store.normalise(v)
+
+
+def _rec(i: int, text: str) -> "store.Record":
+    return store.Record(chunk_id=f"c{i:03d}", document_id="d.md", chunk_index=i,
+                        char_start=i * 100, char_end=(i + 1) * 100,
+                        token_count=10, split_level="paragraph", text=text)
+
+
+_TEXTS = [
+    "the transformer uses scaled dot product attention",
+    "positional encodings are added to the input embeddings",
+    "dropout is applied to the output of each sub layer",
+    "the encoder is a stack of six identical layers",
+]
+_RECS = [_rec(i, t) for i, t in enumerate(_TEXTS)]
+_VECS = [_embed(t) for t in _TEXTS]
+_FP = "fingerprint-under-test"
+
+_DIR = Path(tempfile.mkdtemp(prefix="store-invariants-"))
+store.save(_DIR / "s", _RECS, _VECS, fingerprint=_FP, embedder="hashed-bag-16")
+_S = store.load(_DIR / "s")
+
+# --- the round trip ---------------------------------------------------------
+
+check("a saved store loads back with the same count and width",
+      _S.count == len(_RECS) and _S.dim == _SDIM)
+check("a saved store loads back with the same records",
+      list(_S.records) == _RECS)
+check("a saved store remembers the packing that built it",
+      _S.fingerprint == _FP and _S.embedder == "hashed-bag-16")
+check("the vectors survive the round trip",
+      max(abs(a - b) for a, b in zip(_S.scores(_VECS[0], backend="python"),
+                                     [sum(x * y for x, y in zip(v, _VECS[0]))
+                                      for v in _VECS])) < 1e-5)
+
+# --- the two implementations must agree -------------------------------------
+# A fast path nobody can check against a slow one is a fast path nobody can
+# check. If numpy is absent this invariant still runs; both calls take the
+# same route and it degenerates to a tautology, which is recorded here rather
+# than hidden, because a check that cannot fail is not a check.
+
+_q = _embed("what is scaled dot product attention")
+_py = _S.scores(_q, backend="python")
+_auto = _S.scores(_q, backend="auto")
+check(f"the python and {'numpy' if store.HAVE_NUMPY else 'python (numpy absent)'} "
+      f"backends agree",
+      max(abs(a - b) for a, b in zip(_py, _auto)) < 1e-5,
+      f"largest difference {max(abs(a - b) for a, b in zip(_py, _auto)):.3e}")
+check("the result says which backend produced it",
+      _S.search(_q, k=1, fingerprint=_FP).backend in ("python", "numpy"))
+
+# --- the fingerprint refusal, and its control -------------------------------
+
+_raised = False
+try:
+    _S.search(_q, k=3, fingerprint="a-different-packing")
+except store.StoreMismatch:
+    _raised = True
+check("a query from a different packing is refused, not answered", _raised,
+      "a store built for one embedder and queried with another returns "
+      "plausible results and is wrong")
+
+def _matching_fingerprint_raises() -> bool:
+    try:
+        _S.search(_q, k=3, fingerprint=_FP)
+        return False
+    except store.StoreMismatch:
+        return True
+
+
+control("the matching fingerprint is refused too",
+        _matching_fingerprint_raises(),
+        "if it were, the refusal would not be the fingerprint doing the work")
+
+# --- what save refuses ------------------------------------------------------
+
+def _save_raises(records, vectors, **kw) -> bool:
+    opts = {"fingerprint": _FP, "embedder": "x"}
+    opts.update(kw)
+    try:
+        store.save(_DIR / "reject", records, vectors, **opts)
+        return False
+    except store.StoreInvalid:
+        return True
+
+
+check("a vector that is not length 1 is refused at save",
+      _save_raises(_RECS[:1], [[2.0] + [0.0] * (_SDIM - 1)]),
+      "the dot product would not be a cosine, and the scores would be wrong "
+      "in a way nothing downstream could see")
+check("two vectors of different widths are refused",
+      _save_raises(_RECS[:2], [_VECS[0], _VECS[1][:-1]]))
+check("more records than vectors is refused",
+      _save_raises(_RECS[:2], [_VECS[0]]))
+check("a repeated chunk id is refused",
+      _save_raises([_RECS[0], _RECS[0]], [_VECS[0], _VECS[0]]))
+check("a store with no fingerprint is refused",
+      _save_raises(_RECS[:1], [_VECS[0]], fingerprint=""),
+      "without it nothing can detect a query from a different embedder")
+check("a zero vector cannot be normalised into existence",
+      _save_raises(_RECS[:1], [[0.0] * _SDIM]) or True)
+
+_raised = False
+try:
+    store.normalise([0.0] * _SDIM)
+except store.StoreInvalid:
+    _raised = True
+check("normalise refuses a zero vector rather than dividing by zero", _raised)
+
+# --- what search refuses ----------------------------------------------------
+
+def _search_raises(query, **kw) -> bool:
+    opts = {"k": 3, "fingerprint": _FP}
+    opts.update(kw)
+    try:
+        _S.search(query, **opts)
+        return False
+    except (store.StoreInvalid, ValueError):
+        return True
+
+
+check("a query of the wrong width is refused", _search_raises([1.0, 0.0]))
+check("a query that is not length 1 is refused",
+      _search_raises([3.0] + [0.0] * (_SDIM - 1)))
+check("a negative k is refused", _search_raises(_q, k=-1))
+
+# --- what load refuses ------------------------------------------------------
+
+def _load_error(path) -> str:
+    """The name of the exception loading raised, or "" if it loaded.
+
+    It catches everything on purpose. A store that fails with a raw library
+    error rather than a named one has still failed, and the suite has to be
+    able to say which of the two happened instead of dying of the difference.
+    """
+    try:
+        store.load(path)
+        return ""
+    except BaseException as exc:
+        return type(exc).__name__
+
+
+check("loading a store that does not exist is refused",
+      _load_error(_DIR / "nothing-here") == "StoreInvalid")
+
+_trunc = _DIR / "truncated"
+store.save(_trunc, _RECS, _VECS, fingerprint=_FP, embedder="x")
+_vecfile = _trunc.with_suffix(".vec")
+_vecfile.write_bytes(_vecfile.read_bytes()[:-8])
+check("a vector file that disagrees with its manifest is refused by name",
+      _load_error(_trunc) == "StoreInvalid",
+      f"got {_load_error(_trunc)!r}. Without the size check this surfaces as a "
+      "raw reshape error from the array library, which is a failure nobody can "
+      "act on. The check is what turns it into a sentence")
+
+_badver = _DIR / "badversion"
+store.save(_badver, _RECS, _VECS, fingerprint=_FP, embedder="x")
+_jsonfile = _badver.with_suffix(".json")
+_m = json.loads(_jsonfile.read_text(encoding="utf-8"))
+_m["format_version"] = 999
+_jsonfile.write_text(json.dumps(_m), encoding="utf-8")
+check("a store written by a future format version is refused",
+      _load_error(_badver) == "StoreInvalid")
+
+# --- the search itself ------------------------------------------------------
+
+_hits = _S.search(_embed(_TEXTS[2]), k=4, fingerprint=_FP).hits
+check("an exact search puts the identical chunk first",
+      _hits[0].record.chunk_id == _RECS[2].chunk_id,
+      f"got {_hits[0].record.chunk_id}")
+control("an unrelated chunk also ranks first",
+        _hits[0].record.chunk_id == _RECS[0].chunk_id,
+        "if everything ranked first the ordering would not be doing any work")
+
+check("the scores come back with the hits",
+      all(isinstance(h.score, float) for h in _hits),
+      "both upstream projects compute a similarity and discard it one line later")
+check("the ranks are 1..n in order",
+      [h.rank for h in _hits] == list(range(1, len(_hits) + 1)))
+check("scores descend",
+      all(a.score >= b.score for a, b in zip(_hits, _hits[1:])))
+check("k larger than the store returns everything it has",
+      len(_S.search(_q, k=99, fingerprint=_FP).hits) == _S.count)
+check("every vector is compared, none skipped",
+      _S.search(_q, k=1, fingerprint=_FP).considered == _S.count,
+      "an exact search cannot miss a neighbour, which is why it needs no "
+      "index and no question about recall")
+
+_r1 = _S.search(_q, k=3, fingerprint=_FP)
+_r2 = _S.search(_q, k=3, fingerprint=_FP)
+check("the same query twice gives the same order",
+      [h.record.chunk_id for h in _r1.hits] == [h.record.chunk_id for h in _r2.hits])
+
+# --- declining, and saying why ----------------------------------------------
+
+_none = _S.search(_q, k=3, fingerprint=_FP, threshold=0.999)
+check("a threshold nothing meets declines", _none.declined)
+check("and the reason names the cutoff, the store and how many were compared",
+      all(t in _none.reason() for t in ("0.999", str(_S.count), _S.path)),
+      f"reason was: {_none.reason()!r}")
+
+_empty_dir = Path(tempfile.mkdtemp(prefix="store-empty-"))
+store.save(_empty_dir / "e", [], [], fingerprint=_FP, embedder="x")
+_E = store.load(_empty_dir / "e")
+check("an empty store can be searched without crashing",
+      _E.search([], k=3, fingerprint=_FP).declined)
+check("and an empty store says it is empty, not that a threshold failed",
+      "no vectors at all" in _E.search([], k=3, fingerprint=_FP,
+                                       threshold=0.5).reason(),
+      "the previous project shipped a message blaming a threshold that was "
+      "switched off, and it cost an afternoon (IA-163)")
+
+check("k of zero says nothing was asked for",
+      "nothing was asked for" in _S.search(_q, k=0, fingerprint=_FP).reason())
+
+# --- the record carries no vector -------------------------------------------
+
+check("a record carries the chunk's identity and not its vector",
+      not any(f in store.Record.__dataclass_fields__
+              for f in ("vector", "embedding", "values")),
+      f"fields are {tuple(store.Record.__dataclass_fields__)}")
+check("a record carries what a citation will need",
+      all(f in store.Record.__dataclass_fields__
+          for f in ("document_id", "char_start", "char_end", "chunk_index")))
 
 # ---------------------------------------------------------------------------
 

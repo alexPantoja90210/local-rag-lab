@@ -80,6 +80,41 @@ MUTATIONS = [
         ["and the hard split is recorded rather than silent",
          "the report counts how many chunks needed a hard split"],
     ),
+    (
+        "store.py",
+        "the packing fingerprint no longer checked",
+        "        if fingerprint != self.fingerprint:",
+        "        if False:",
+        ["a query from a different packing is refused, not answered"],
+    ),
+    (
+        "store.py",
+        "an unnormalised vector accepted, so the scores stop being cosines",
+        "        n = _norm(vector)\n        if abs(n - 1.0) > NORM_TOLERANCE:",
+        "        n = _norm(vector)\n        if False:",
+        ["a vector that is not length 1 is refused at save"],
+    ),
+    (
+        "store.py",
+        "results returned unsorted, so the closest is no longer first",
+        "        kept.sort(key=lambda pair: (-pair[0], pair[1].chunk_id))",
+        "        pass",
+        ["an exact search puts the identical chunk first"],
+    ),
+    (
+        "store.py",
+        "the two files allowed to disagree about how many vectors there are",
+        "    if actual_bytes != expected_bytes:",
+        "    if False:",
+        ["a vector file that disagrees with its manifest is refused by name"],
+    ),
+    (
+        "store.py",
+        "an empty store blamed on the threshold, the IA-163 message",
+        "        if self.considered == 0:",
+        "        if False:",
+        ["and an empty store says it is empty, not that a threshold failed"],
+    ),
 ]
 
 

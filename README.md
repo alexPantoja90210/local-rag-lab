@@ -2,23 +2,28 @@
 
 A grounded RAG that runs on one laptop and refuses what it cannot cite.
 
-**Status: slices 1 and 2 of the target architecture.** What is in this
-repository today decides whether a document may enter the knowledge base, and
-splits the ones that may into chunks the embedding model can actually read.
-There is no retrieval, no model and no database yet, and the target
-architecture says which parts are still missing and why each one is there.
+**Status: slices 1, 2 and 3 of four.** What is in this repository today decides
+whether a document may enter the knowledge base, splits what gets in into chunks
+the embedding model can actually read, and keeps the vectors in two files that
+refuse a query built by a different embedder. There is no retrieval and no model
+yet, and the target architecture says which parts are still missing and why each
+one is there.
+
+**There is no database, and that is a decision with numbers behind it.** See
+*The store* below.
 
 ---
 
 ## What is here
 
-Slice 1 decides whether a file may enter the knowledge base. Slice 2 splits
-what gets in, against the embedding model's real token window.
+Slice 1 decides whether a file may enter the knowledge base. Slice 2 splits what
+gets in, against the embedding model's real token window. Slice 3 keeps the
+vectors, and refuses a query that was not built by the same packing.
 
 ```
 python make_fixtures.py                      # build the fixture corpus
-python test_invariants.py                    # 160 invariants, no key, no network, no spend
-python prove_it_can_fail.py                  # break the rules on purpose, check the suite notices
+python test_invariants.py                    # 196 invariants, no key, no network, no spend
+python prove_it_can_fail.py                  # break the code 12 ways, check the suite notices
 python ingest_contract.py --documents docs/  # check a real folder
 python measure_window.py --documents docs/   # the one script that needs a download
 ```
@@ -176,12 +181,91 @@ documents and the same k**, for no extra retrieval and no extra spend.
 
 The ratio line is in the script's output, so the next corpus reports its own.
 
+## Slice 3: the store
+
+A vector store's job here is small. Keep N vectors and the identity of the chunk
+each came from; given a query, return the closest k with their scores. That is a
+dot product and a sort.
+
+**Two files.** `store.vec` holds raw little-endian float32, written with the
+standard library's `array`. `store.json` holds the manifest and the records, so
+the store can be inspected without this module. No server, no account, no Docker.
+
+### Why not pgvector, and why not Chroma
+
+Version 2 of the target architecture used Postgres. Version 3 does not, and the
+reasons are measured rather than preferred.
+
+| | |
+| --- | --- |
+| 400 chunks, compared against **all** of them | 1.6 MB, **0.21 ms** |
+| 11,529 passages, the previous project's second corpus | 45 MB, **1.6 ms** |
+| `chromadb` added to a repository that requires nothing | **79 packages** |
+
+An approximate index exists so you do not have to compare against everything. At
+this size comparing against everything is free, and it **cannot miss a
+neighbour**. The previous project already measured that: `check_index.py` found
+identical top-5 lists on 21 of 21 queries at 48 vectors, with a largest score gap
+of 2.384e-07, which is float32 precision.
+
+Among Chroma's 79 packages are a Kubernetes client, an ASGI web server and an
+ONNX runtime. Postgres needs Docker, which on a 16 GB laptop takes one to two
+gigabytes from a budget the local model already claims most of.
+
+So **a database is the sophisticated option that has to earn its place**, the
+same call as keeping the hashed bag-of-words embedding in the previous project:
+hold the crude floor, so there is something to measure the expensive thing
+against. When the corpus stops fitting in memory, `check_index.py` is what says
+so.
+
+### What the store refuses
+
+**A query built by a different packing.** This is the reason the module exists
+rather than a dictionary:
+
+```python
+store.search(query, k=5, fingerprint="...")   # required, not a convenience
+# StoreMismatch: the store was built under packing c3e3d917... by mxbai-...,
+# and the query was produced under 0000... Nothing was searched: the scores
+# would have been meaningless and would have looked fine.
+```
+
+A store built for one embedder and queried with another returns results that look
+entirely normal. Nothing downstream can tell.
+
+**A vector that is not length 1**, at save time, because the dot product would
+not be a cosine and every score would be quietly wrong. **Two files that disagree**
+about how many vectors they hold, by name as `StoreInvalid` rather than as a raw
+reshape error. **A query of the wrong width.** **A repeated chunk id**, because a
+content-derived id repeating means the same chunk was added twice.
+
+### Saying why there is nothing
+
+An empty result is never just empty:
+
+```
+4 vectors were compared and none scored above 0.99; the store at
+/path/to/corpus holds 4 vectors under packing c3e3d91703a20b0d
+```
+
+and, for a store with nothing in it, the reason says **the store is empty**
+rather than blaming the threshold. The previous project shipped a message that
+blamed a threshold which was switched off, and it sent someone looking in the
+wrong place for an afternoon.
+
+### Two implementations, and they have to agree
+
+The search is written twice: once in plain Python, readable and slow, and once
+through numpy when it is installed. An invariant asserts they agree to within
+1e-5 on every query. **A fast path nobody can check against a slow one is a fast
+path nobody can check.** numpy is never required.
+
 ## The suite counts itself, and proves it can fail
 
 ```
 $ python test_invariants.py
 ...
-all 160 invariants hold
+all 196 invariants hold
 ```
 
 The count is printed rather than left to be counted by hand, because on the
@@ -189,13 +273,13 @@ previous project two counts of assertions were stated from memory on the same
 day and both were wrong.
 
 Passing is not the claim. `prove_it_can_fail.py` copies the tree, breaks the
-code seven ways, and checks that the suite goes red **and that the invariants
+code twelve ways, and checks that the suite goes red **and that the invariants
 which should catch each break are the ones that do**. A mutation that reddens
 the suite for some unrelated reason would prove nothing, so each one names the
 invariants it expects:
 
 ```
-baseline: all 160 invariants hold  (exit 0)
+baseline: all 196 invariants hold  (exit 0)
 
 mutation: the extension rule removed                          in ingest_contract.py
 mutation: a failed read returned as content, the upstream defect
@@ -205,10 +289,10 @@ mutation: the tail of the document dropped, the truncation this module forbids
 mutation: a fresh id per run, the upstream defect
 mutation: the split level no longer recorded
 
-all 7 mutations were caught. The suite can fail.
+all 12 mutations were caught. The suite can fail.
 ```
 
-Three of the 160 are **controls**: they pass only when something is *not* true.
+Four of the 196 are **controls**: they pass only when something is *not* true.
 Switching the extension rule off must make the mislabelled file pass, otherwise
 something else is rejecting it. A budget large enough to hold a whole document
 must still produce more than one chunk, otherwise the splitter is cutting on
@@ -218,8 +302,13 @@ that always returns nothing would look identical to a working one.
 
 ## What this does not do yet
 
-- It does not read a document. It decides whether one may be read, and how a
-  document's text would be split once something else has read it.
+- It does not read a document, and it does not embed one. It decides whether a
+  document may be read, how its text would be split, and where the resulting
+  vectors live once something else has produced them.
+- It holds everything in memory when it searches. At 45 MB that is not a
+  problem. At 50 GB it would be, and that is when a real database earns its
+  place.
+- There is no concurrency. One process writes, one process reads.
 - It does not retrieve, generate, cite or refuse an answer. Those are later
   slices, drawn in the target architecture.
 - It does not verify that a well-formed file says anything true.
