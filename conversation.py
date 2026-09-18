@@ -72,6 +72,12 @@ REFUSED_CAP = "refused_cap"
 REFUSED_REFERENT = "refused_referent"
 REFUSED_REWRITE = "refused_rewrite"
 
+# IA-192. The rewrite resolved a reference to a subject the turn it refers to
+# never mentioned. Separate from REFUSED_REWRITE because the two say different
+# things: that one means the rewrite brought in a word from nowhere, this one
+# means the rewrite dropped the only thing the reference could have pointed at.
+REFUSED_DRIFT = "refused_drift"
+
 # IA-189. The model did not produce a presupposition list. Counted apart from
 # every refusal, because folding it in would mean the drift count rises whenever
 # the model stops cooperating with a format.
@@ -84,6 +90,19 @@ REFERRING = frozenset({
 })
 
 _WORD = re.compile(r"[a-z0-9']+")
+
+
+def referring_words(question: str) -> tuple[str, ...]:
+    """Which references a question leans on.
+
+    One implementation with two callers, deliberately. `check_referent` asks
+    whether there is anything to refer to; the rewrite's survival check
+    (IA-192) asks whether the rewrite kept it. If those two read different
+    lists, a question can be referring for one and self-contained for the
+    other, and the gap between them is exactly where a drifted turn lives.
+    """
+    return tuple(sorted({w for w in _WORD.findall(question.lower())
+                         if w in REFERRING}))
 
 
 class ConversationError(Exception):
@@ -233,10 +252,28 @@ class Conversation:
     def last(self) -> retrieval.Turn | None:
         return self.turns[-1] if self.turns else None
 
+    def antecedent(self) -> tuple[str, ...]:
+        """The last turn that produced an answer, as the text the user saw.
+
+        A reference points at the last thing the user was actually told, so a
+        refused turn is skipped rather than treated as the antecedent: it
+        produced nothing, and `transcript()` already withholds it from the
+        model for the same reason. That also means this does not depend on
+        NO_ANSWER_STAGES membership, which the refusals this slice adds are
+        deliberately outside of.
+
+        An abstention is not an antecedent either. `check_referent` refuses a
+        reference back to one, so by the time this is read the only turn that
+        could be referred to is one that answered.
+        """
+        for turn in reversed(self.turns):
+            if turn.stage == retrieval.ANSWERED:
+                return (turn.question, turn.answer or "")
+        return ()
+
     def check_referent(self, question: str) -> ReferentDecision:
         """A turn that produced no answer cannot be referred to."""
-        words = tuple(sorted({w for w in _WORD.findall(question.lower())
-                              if w in REFERRING}))
+        words = referring_words(question)
         previous = self.last
         if previous is None or previous.stage not in NO_ANSWER_STAGES:
             return ReferentDecision(True, words,

@@ -37,6 +37,31 @@ invented entities and figures: *"and the second $2,500 tranche?"* introduces
 It does **not** catch the parental-leave case, because the user supplied that
 phrase in turn 1. The two mechanisms are not alternatives.
 
+**A surviving referent.** IA-192. If the question leans on a reference, the
+rewrite has to keep at least one content word from the turn that reference
+points at. This is the one the first real conversation needed and did not have:
+
+    you  What is the annual learning budget per employee?   -> $2,500
+    you  Can it be used for conferences?
+         rewritten as: NeuralFlow AI for conferences
+
+*it* pointed at the budget. The rewrite resolved it to the company, retrieved a
+passage about conference speaking, answered that, and cited a chunk it was
+genuinely supplied. Every other check passed, because each of them reads the
+rewrite **on its own**, and on its own that rewrite is a reasonable question the
+corpus can answer. Only the relation between the two sentences is wrong.
+
+So this check is the only one here that compares the question asked against the
+question sent. It does not resolve coreference and does not claim to: it asks
+whether anything of the antecedent survived. A reference resolved to a subject
+the earlier turn never mentioned was not resolved, it was replaced.
+
+**It refuses in the expensive direction, and that is stated rather than
+discovered.** A model that paraphrases faithfully -- *learning budget* into
+*professional development spending* -- keeps no word and is refused. That is a
+false refusal, it is the conservative direction, and it is the thing to measure
+before this mechanism is called good.
+
 **A cited presupposition.** The model is asked to state what its own rewritten
 question presupposes, one claim per line, each citing a supplied chunk or marked
 `[[none]]`. Those lines go through `citation_gate` unchanged. Same contract, same
@@ -92,6 +117,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 import citation_gate as gate
+import conversation as conv
 import ollama_client as oc
 
 _WORD = re.compile(r"[a-z0-9$%]+")
@@ -258,3 +284,66 @@ def check_rewrite(
     # question assumes something no passage supports, and the turn stops.
     allowed = verdict.passed and not verdict.abstained
     return RewriteVerdict(allowed, True, (), text, verdict, rewrite)
+
+
+# --------------------------------------------------------------------------
+# IA-192. The referent has to survive the rewrite.
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Survival:
+    """Whether the rewrite still points at what the question pointed at."""
+
+    allowed: bool
+    referring: tuple[str, ...]
+    preserved: tuple[str, ...]
+    rewrite: str
+    antecedent: tuple[str, ...]
+
+    def reason(self) -> str:
+        if self.allowed:
+            return ""
+        refs = ", ".join(self.referring)
+        if not self.antecedent:
+            return (f"this question refers back ({refs}) and no earlier turn "
+                    "produced an answer, so there is nothing for the reference "
+                    "to point at. Nothing was answered: ask the question "
+                    "without the reference")
+        return (f"this question refers back ({refs}), and the rewritten question "
+                "kept nothing from the turn it refers to.\n"
+                f"  you asked before: {self.antecedent[0]}\n"
+                f"  rewritten as:     {self.rewrite}\n"
+                "  A reference resolved to a subject the earlier turn never "
+                "mentioned was not resolved, it was replaced. Nothing was "
+                "answered")
+
+
+def check_referent_survives(question: str, rewrite: str, *,
+                            antecedent: Sequence[str]) -> Survival:
+    """Refuse a rewrite that dropped the thing the question referred to.
+
+    Costs nothing and asks the model for nothing: two strings already in hand,
+    compared with the same crude singular the introduction check uses. It runs
+    before retrieval, so a drifted turn never reaches the embedder.
+    """
+    referring = conv.referring_words(question)
+    if not referring:
+        return Survival(True, (), (), rewrite, tuple(antecedent))
+
+    if not antecedent:
+        return Survival(False, referring, (), rewrite, ())
+
+    known: set[str] = set()
+    for text in antecedent:
+        known |= content_words(text)
+
+    preserved = []
+    for raw in _WORD.findall(rewrite.lower()):
+        if raw in STOPWORDS:
+            continue
+        if raw in known or _normalise(raw) in known:
+            if raw not in preserved:
+                preserved.append(raw)
+    return Survival(bool(preserved), referring, tuple(preserved), rewrite,
+                    tuple(antecedent))

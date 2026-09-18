@@ -355,6 +355,35 @@ MUTATIONS = [
         "    introduced = ()",
         ["the introduced-word check runs even with the presupposition check off"],
     ),
+    # IA-192. Three mutations, because the defect had three places to hide and
+    # only one of them was the mechanism.
+    (
+        "rewrite_gate.py",
+        "the survival check allows everything",
+        "    return Survival(bool(preserved), referring, tuple(preserved), rewrite,",
+        "    return Survival(True, referring, tuple(preserved), rewrite,",
+        ["the rewrite that answered a question nobody asked is refused",
+         "control: a rewrite that kept nothing from the turn it refers to is allowed",
+         "a drifted rewrite stops the turn in the real code path"],
+    ),
+    (
+        "chat.py",
+        "the survival check built but never acted on, which is the defect itself",
+        "    if not survives.allowed:",
+        "    if False:",
+        ["a drifted rewrite stops the turn in the real code path",
+         "and it stops before the embedder is ever called"],
+    ),
+    (
+        "conversation.py",
+        "the antecedent taken from the last turn instead of the last answer",
+        "        for turn in reversed(self.turns):\n"
+        "            if turn.stage == retrieval.ANSWERED:\n"
+        "                return (turn.question, turn.answer or \"\")",
+        "        for turn in reversed(self.turns):\n"
+        "            return (turn.question, turn.answer or \"\")",
+        ["a refused turn is skipped when looking for what a reference points at"],
+    ),
 ]
 
 

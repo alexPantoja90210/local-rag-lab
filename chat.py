@@ -6,6 +6,7 @@ the model is asked anything:
 
     the cap        -> nothing was sent
     the referent   -> the turn you are referring to produced no answer
+    the drift      -> the rewrite dropped the thing you were referring to
     the rewrite    -> your question was rewritten into one you did not ask
     the gate       -> the answer cited something it was not given
 
@@ -75,6 +76,18 @@ def converse_turn(question, *, talk, chat_model, embedder, store_obj,
                               refusal=verdict.reason()), {"text": text}
 
     query = oc.tool_query(first)
+
+    # IA-192, and the reason this sits here rather than below: it needs the
+    # rewrite and nothing else, so it refuses before the embedding call. Every
+    # other check reads the rewrite on its own; this one is the only one that
+    # compares the question asked against the question sent.
+    survives = rg.check_referent_survives(question, query,
+                                          antecedent=talk.antecedent())
+    if not survives.allowed:
+        return retrieval.Turn(question=question, retrieved=False, supplied=(),
+                              stage=conv.REFUSED_DRIFT,
+                              refusal=survives.reason()), {"query": query}
+
     found = retrieval.retrieve(query, embedder=embedder, store_obj=store_obj,
                                fingerprint=fingerprint, k=k, threshold=threshold)
     if found.declined:
@@ -179,7 +192,8 @@ def main(argv=None) -> int:
     print(f"budget     {args.token_budget} tokens per turn, seed ratio "
           f"{args.seed_ratio} chars/token")
     print(f"threshold  {args.threshold if args.threshold is not None else 'none, stated explicitly'}")
-    print(f"rewrite    introduced-word check always on; presupposition check "
+    print(f"rewrite    referent-survival and introduced-word checks always on; "
+          f"presupposition check "
           f"{'ON' if args.presupposition_check else 'OFF (IA-189)'}")
     print("\nAsk a question. Empty line or Ctrl-C to stop.\n")
 

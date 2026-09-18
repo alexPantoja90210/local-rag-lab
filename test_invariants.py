@@ -1801,6 +1801,142 @@ control("the presupposition check runs even when it is switched off",
         "the switch does nothing, so turning it off does not protect anything")
 
 
+# --- IA-192: the referent has to survive the rewrite ------------------------
+#
+# The first real conversation answered a question nobody asked. "Can it be used
+# for conferences?" became "NeuralFlow AI for conferences", retrieval found a
+# passage about conference speaking, the answer cited a chunk it was genuinely
+# supplied, and every existing check passed. They all read the rewrite on its
+# own, and on its own it is a fine question. Only the relation between the two
+# sentences was wrong, and nothing was looking at the relation.
+
+_ANT = ("What is the annual learning budget per employee?", "$2,500")
+
+
+def _surv(rewrite, question="Can it be used for conferences?", antecedent=_ANT):
+    return rg.check_referent_survives(question, rewrite, antecedent=antecedent)
+
+
+# The turn, as it actually happened, with the strings it actually had.
+_real192 = _surv("NeuralFlow AI for conferences")
+check("the rewrite that answered a question nobody asked is refused",
+      not _real192.allowed)
+check("and the refusal names the reference it failed to carry",
+      "(it)" in _real192.reason())
+check("and shows both sentences, because the defect is the relation between them",
+      "annual learning budget" in _real192.reason()
+      and "NeuralFlow AI for conferences" in _real192.reason())
+
+check("a rewrite that keeps the subject it refers to is allowed",
+      _surv("annual learning budget for conferences").allowed)
+check("and it says which words survived, so the pass is auditable too",
+      _surv("annual learning budget for conferences").preserved != ())
+check("one surviving word is enough, because this is a floor and not a claim "
+      "about meaning",
+      _surv("is the budget usable at conferences").preserved == ("budget",))
+
+check("a self-contained question is not subject to the check at all",
+      _surv("what is the 401(k) match?",
+            question="what is the 401(k) match?").allowed)
+check("a reference with no answered turn behind it is refused",
+      not _surv("conferences", antecedent=()).allowed)
+check("and that refusal says there is nothing to point at, not that a word was "
+      "dropped",
+      "nothing for the reference to point at"
+      in _surv("conferences", antecedent=()).reason())
+
+check("the answer counts as antecedent, not only the question",
+      _surv("is $2,500 paid per year",
+            question="is that per year?").allowed)
+check("a plural of an antecedent word still counts as carried",
+      _surv("annual learning budgets for conferences").allowed)
+
+# The two mechanisms must read the same list. If they drift, a question can be
+# referring for one and self-contained for the other, and a drifted turn lives
+# in exactly that gap.
+check("the survival check and the referent rule read one word list",
+      conv.referring_words("can it be used for that?") == ("it", "that"))
+check("and both callers go through it",
+      "referring_words" in _inspect.getsource(conv.Conversation.check_referent))
+
+# The antecedent is the last turn that ANSWERED, not simply the last turn.
+_hist = _talk()
+_hist.record(_answered(q="what is the annual learning budget", ans="$2,500"))
+_hist.record(retrieval.Turn(question="and the tranche?", retrieved=False,
+                            supplied=(), stage=conv.REFUSED_DRIFT,
+                            refusal="x"))
+check("a refused turn is skipped when looking for what a reference points at",
+      _hist.antecedent()[0] == "what is the annual learning budget")
+check("and a conversation with nothing answered yet has no antecedent",
+      _talk().antecedent() == ())
+
+control("a rewrite that kept nothing from the turn it refers to is allowed",
+        _surv("NeuralFlow AI for conferences").allowed,
+        "the survival check never refuses, so nothing above is evidence")
+control("a rewrite that kept the subject is refused anyway",
+        not _surv("annual learning budget for conferences").allowed,
+        "the check refuses every follow-up, which looks identical to working")
+control("a question with no reference in it is refused",
+        not _surv("what is the 401(k) match?",
+                  question="what is the 401(k) match?").allowed)
+
+
+# The glue, which is where this defect lived. The mechanism was never the
+# problem; nothing called it.
+
+class _CountingEmbedder:
+    """Wraps the stub so an invariant can say the turn cost no embedding."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.calls = 0
+
+    @property
+    def name(self):
+        return self._inner.name
+
+    def embed(self, text):
+        self.calls += 1
+        return self._inner.embed(text)
+
+
+_counting = _CountingEmbedder(_emb)
+_talk192 = _talk()
+_talk192.record(_answered(q="what is the annual learning budget", ans="$2,500"))
+_drift_turn = chatmod.converse_turn(
+    "can it be used for conferences?", talk=_talk192, chat_model="m",
+    embedder=_counting, store_obj=_S4, fingerprint=_fp4,
+    transport=_scripted(_called("NeuralFlow AI for conferences"),
+                        _said_msg("unused"), _said_msg("unused")),
+    k=3, threshold=None, known_ids=_known4)[0]
+check("a drifted rewrite stops the turn in the real code path",
+      _drift_turn.stage == conv.REFUSED_DRIFT)
+check("and it stops before the embedder is ever called",
+      _counting.calls == 0)
+check("and before an answer is generated, with the script still holding two",
+      _drift_turn.answer is None)
+
+_kept = _CountingEmbedder(_emb)
+_talk_ok = _talk()
+_talk_ok.record(_answered(q="what is the learning budget", ans="$2,500"))
+_kept_turn = chatmod.converse_turn(
+    "can it be used for conferences?", talk=_talk_ok, chat_model="m",
+    embedder=_kept, store_obj=_S4, fingerprint=_fp4,
+    transport=_scripted(_called("learning budget conferences"),
+                        _said_msg("The budget is $2,500 [[%s]]." % _SUP5)),
+    k=3, threshold=None, known_ids=_known4)[0]
+check("a follow-up whose rewrite kept the subject reaches an answer",
+      _kept_turn.stage == retrieval.ANSWERED)
+check("and that one did reach the embedder, so the invariant above is about "
+      "the refusal and not about a broken stub",
+      _kept.calls > 0)
+
+control("a follow-up whose rewrite kept the subject is refused anyway",
+        _kept_turn.stage != retrieval.ANSWERED,
+        "every follow-up dies before retrieval, so refusing the drifted one "
+        "proves nothing")
+
+
 # ---------------------------------------------------------------------------
 
 print()
