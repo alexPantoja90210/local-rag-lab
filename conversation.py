@@ -56,6 +56,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Sequence
 
+import citation_gate as gate
 import retrieval
 
 # Outcomes that leave nothing for a later turn to refer to.
@@ -268,8 +269,30 @@ class Conversation:
         """
         for turn in reversed(self.turns):
             if turn.stage == retrieval.ANSWERED:
-                return (turn.question, turn.answer or "")
+                return (turn.question, gate.plain(turn.answer or ""))
         return ()
+
+    def said(self, question: str) -> list[str]:
+        """Everything the conversation has contained, both sides of it.
+
+        IA-194 established that this has two sides: the composer carries words
+        forward out of the answer the user was shown, so a check that had only
+        ever seen what the USER typed called the system's own figures invented.
+
+        IA-197 established what is NOT part of it: the citation markup. That is
+        bookkeeping, and letting it through here quietly registered every chunk
+        id as a word the conversation contained.
+
+        One method rather than a list built at the call site, so the two rules
+        above cannot be applied in one place and forgotten in the other.
+        """
+        out: list[str] = []
+        for turn in self.turns:
+            out.append(turn.question)
+            if turn.answer:
+                out.append(gate.plain(turn.answer))
+        out.append(question)
+        return out
 
     def check_referent(self, question: str) -> ReferentDecision:
         """A turn that produced no answer cannot be referred to."""

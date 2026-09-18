@@ -385,9 +385,9 @@ MUTATIONS = [
         "the antecedent taken from the last turn instead of the last answer",
         "        for turn in reversed(self.turns):\n"
         "            if turn.stage == retrieval.ANSWERED:\n"
-        "                return (turn.question, turn.answer or \"\")",
+        "                return (turn.question, gate.plain(turn.answer or \"\"))",
         "        for turn in reversed(self.turns):\n"
-        "            return (turn.question, turn.answer or \"\")",
+        "            return (turn.question, gate.plain(turn.answer or \"\"))",
         ["a refused turn is skipped when looking for what a reference points at"],
     ),
     # IA-194. Composition can fail in two directions and both are silent.
@@ -415,13 +415,33 @@ MUTATIONS = [
          "control: a self-contained question is composed too"],
     ),
     (
-        "chat.py",
+        "conversation.py",
         "the introduction check shown only what the user typed",
-        "            + [t.answer for t in talk.turns if t.answer]",
-        "            + []",
+        "            if turn.answer:\n"
+        "                out.append(gate.plain(turn.answer))",
+        "            if False:\n"
+        "                out.append(gate.plain(turn.answer))",
         ["a word the system itself showed the user is not an introduction",
          "control: the query carries forward a word the user never typed and "
          "the turn survives"],
+    ),
+    # IA-197. The markup carried as content.
+    (
+        "citation_gate.py",
+        "an answer reused with its citations still attached",
+        '    return " ".join(CITATION.sub(" ", text).split())',
+        "    return text",
+        ["a citation is stripped out of an answer's prose",
+         "no chunk id reaches the search query",
+         "the introduction check is not shown the chunk ids either",
+         "control: a chunk id reaches the search query"],
+    ),
+    (
+        "conversation.py",
+        "the introduction check shown the answers with their markup on",
+        "                out.append(gate.plain(turn.answer))",
+        "                out.append(turn.answer)",
+        ["the introduction check is not shown the chunk ids either"],
     ),
 ]
 

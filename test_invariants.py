@@ -2003,6 +2003,73 @@ check("an empty query cannot be built either",
       _raises(lambda: rg.Query("  ", rg.QUERY_MODEL, ()), ValueError))
 
 
+# --- IA-197: an answer's citations are bookkeeping, not words ---------------
+#
+# Found on the run that PASSED conversation A. The answer was right, the
+# citation was valid, and the search query read
+#
+#   Can it be used for conferences? annual learning budget per employee
+#   $2 500 d7b771e573a3f7c13b311f2ab63aeafd
+#
+# because the antecedent was handed over with its markup on and the composer
+# tokenised the chunk id as a word of the answer.
+
+# This first asserted == "The budget is $2,500." and went red: the citation
+# sits before the full stop, so removing it leaves "$2,500 .". The assertion
+# was wrong and the code was not, for the third time in this file. What plain()
+# owes its callers is no markup, no id and no double space -- they are
+# tokenisers, and none of them can see a space before a full stop. Tidying
+# punctuation would be a rule with no consumer.
+check("a citation is stripped out of an answer's prose",
+      gate.plain("The budget is $2,500 [[%s]]." % _A).startswith(
+          "The budget is $2,500")
+      and "[[" not in gate.plain("The budget is $2,500 [[%s]]." % _A))
+check("several citations are stripped, not just the first",
+      "[[" not in gate.plain("A [[%s]] and B [[%s]]." % (_A, _A)))
+check("and the id itself does not survive anywhere in the prose",
+      _A not in gate.plain("The budget is $2,500 [[%s]]." % _A))
+check("prose carrying no citation is returned unchanged",
+      gate.plain("The budget is $2,500.") == "The budget is $2,500.")
+check("the hole the citation leaves is closed up, not left as a gap",
+      "  " not in gate.plain("A [[%s]] B" % _A))
+
+_talk197 = _talk()
+_talk197.record(_ANT6)
+_ANS197 = "$2,500 [[%s]]" % _SUP6
+_talk197.turns[-1] = retrieval.Turn(
+    question=_ANT6.question, retrieved=True, supplied=(_SUP6,),
+    stage=retrieval.ANSWERED, answer=_ANS197)
+
+check("the antecedent is the prose the user read, not its bookkeeping",
+      _SUP6 not in " ".join(_talk197.antecedent()))
+check("and the figure the user read is still in it",
+      "2,500" in " ".join(_talk197.antecedent()))
+
+_q197 = rg.compose_query(_FOLLOW, _DRIFT, antecedent=_talk197.antecedent())
+check("no chunk id reaches the search query",
+      not any(cid in _q197.text for cid in _known4))
+check("and none is recorded as a word carried forward",
+      not any(cid in _q197.carried for cid in _known4))
+
+_said197 = _talk197.said(_FOLLOW)
+check("the introduction check is not shown the chunk ids either",
+      not any(cid in " ".join(_said197) for cid in _known4))
+check("but it is shown what the answer actually said",
+      any("2,500" in t for t in _said197))
+check("and both sides of the conversation are in it",
+      any(t == _FOLLOW for t in _said197)
+      and any(t == _ANT6.question for t in _said197))
+
+control("a chunk id reaches the search query",
+        any(cid in _q197.text for cid in _known4),
+        "the markup is being carried as content, so the query contains this "
+        "system's own accounting")
+control("the answer's prose is stripped away along with its markup",
+        "2,500" not in " ".join(_talk197.antecedent()),
+        "plain() is eating the sentence, so the assertions above pass for the "
+        "wrong reason")
+
+
 # ---------------------------------------------------------------------------
 
 print()

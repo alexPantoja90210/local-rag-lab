@@ -66,6 +66,22 @@ from typing import Iterable, Sequence
 # occurs in ordinary prose, so a false positive needs effort.
 CITATION = re.compile(r"\[\[([^\[\]]*)\]\]")
 
+
+def plain(text: str) -> str:
+    """An answer's prose, with its citation markup removed.
+
+    IA-197. What the user read was "$2,500". The `[[d7b771e5...]]` beside it is
+    this system's own bookkeeping -- the proof carried alongside the sentence,
+    not a word of it. Anything that reuses an answer as **content** has to drop
+    the markup first, or the machine's accounting leaks into the next turn: a
+    chunk id ended up inside a search query, and every cited id was being
+    recorded as a word the conversation contained.
+
+    One function, because the rule has more than one caller and a rule with two
+    implementations has two ways to be forgotten.
+    """
+    return " ".join(CITATION.sub(" ", text).split())
+
 # A claim ends at a sentence terminator or at a line break. Models in this
 # family answer in both paragraphs and bullet lists, and a bullet without a full
 # stop is still a claim. Splitting on sentences alone would let a whole bulleted

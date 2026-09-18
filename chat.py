@@ -112,15 +112,11 @@ def converse_turn(question, *, talk, chat_model, embedder, store_obj,
                               stage=retrieval.REFUSED_THRESHOLD,
                               refusal=found.reason()), _q(query_obj)
 
-    # IA-194 exposed a disagreement between two parts of this file. The
-    # composer carries words forward from the answer the user was shown; the
-    # introduction check counted only what the USER had typed, so those words
-    # looked invented and the turn was refused for quoting its own transcript.
-    # "What the conversation contained" has two sides, and this is the list
-    # that says so.
-    said = ([t.question for t in talk.turns]
-            + [t.answer for t in talk.turns if t.answer]
-            + [question])
+    # Both sides of the conversation, with the citation markup dropped. The
+    # rules are IA-194's and IA-197's and they live in `Conversation.said`,
+    # not here: this file had its own copy of the first one and got the
+    # second one wrong.
+    said = talk.said(question)
     texts = [h.record.text for h in found.result.hits]
 
     # The deterministic half always runs: it asks the model for nothing.
