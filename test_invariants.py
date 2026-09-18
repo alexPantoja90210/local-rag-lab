@@ -2070,6 +2070,81 @@ control("the answer's prose is stripped away along with its markup",
         "wrong reason")
 
 
+# --- the stop condition, which used to be prose ----------------------------
+#
+# IA-187's condition said: "if a legitimate follow-up on an answered turn is
+# REFUSED, the mechanism is wrong." On 17 September the control turn was not
+# refused. It was answered, with a valid citation, about a different question,
+# and read literally that condition approved it.
+#
+# A check that can only fail in one direction is an expectation. These are the
+# assertions that the judge can fail in both.
+
+import accept
+
+_CTRL = accept.CONVERSATIONS[0]
+_AID = accept._A_ID
+_BID = accept._B_ID
+
+
+def _ok_turn(stage, answer=None):
+    return accept._turn(stage, answer)
+
+
+_good = [_ok_turn(retrieval.ANSWERED, "$2,500 [[%s]]." % _AID),
+         _ok_turn(retrieval.ANSWERED, "Yes, for conferences [[%s]]." % _AID)]
+_strict = [_ok_turn(retrieval.ANSWERED, "$2,500 [[%s]]." % _AID),
+           _ok_turn(conv.REFUSED_DRIFT)]
+_other = [_ok_turn(retrieval.ANSWERED, "$2,500 [[%s]]." % _AID),
+          _ok_turn(retrieval.ANSWERED, "NeuralFlow speaks [[%s]]." % _BID)]
+
+check("a correct transcript is held", all(v.held for v in accept.judge(_CTRL, _good)))
+check("refusing what should have been answered fails",
+      accept.judge(_CTRL, _strict)[1].held is False)
+check("and the reason names the stage the condition required",
+      "requires" in accept.judge(_CTRL, _strict)[1].why)
+
+# The other direction, which is the one the old condition could not express.
+check("answering something else fails, even though the turn was answered",
+      accept.judge(_CTRL, _other)[1].held is False)
+check("and the reason says it answered a different question",
+      "different question" in accept.judge(_CTRL, _other)[1].why)
+check("and it names both sets of citations, so the failure is checkable",
+      _BID in accept.judge(_CTRL, _other)[1].why
+      and _AID in accept.judge(_CTRL, _other)[1].why)
+
+check("the two directions fail differently, so they cannot be confused",
+      accept.judge(_CTRL, _strict)[1].why != accept.judge(_CTRL, _other)[1].why)
+
+# A mechanism that has never fired produces no verdict at all.
+_obs = accept.judge(accept.CONVERSATIONS[2],
+                    [_ok_turn(retrieval.ANSWERED, "$2,500 [[%s]]." % _AID),
+                     _ok_turn(retrieval.REFUSED_GATE)])
+check("a step that is observed and not asserted is neither held nor failed",
+      _obs[1].held is None)
+check("and it is reported as what happened, not as a pass",
+      _obs[1].why.startswith("observed"))
+
+check("the citations read are the answer's, not what was supplied",
+      accept.cited(_ok_turn(retrieval.ANSWERED, "x [[%s]]." % _BID)) == (_BID,))
+check("a turn with no answer cited nothing",
+      accept.cited(_ok_turn(conv.REFUSED_DRIFT)) == ())
+
+check("the self-check sorts all three transcripts", accept.self_check()[0])
+check("and it says which of the three it managed",
+      len(accept.self_check()[1]) == 3)
+
+control("a transcript that answered something else is held",
+        accept.judge(_CTRL, _other)[1].held is True,
+        "the judge cannot see the failure it exists for, so the stop condition "
+        "is one-directional again")
+control("a correct transcript is failed",
+        accept.judge(_CTRL, _good)[1].held is False,
+        "the judge fails everything, which looks identical to a strict one")
+control("an observed step is counted as a pass",
+        _obs[1].held is True,
+        "a mechanism that has never fired is being reported as evidence")
+
 # ---------------------------------------------------------------------------
 
 print()

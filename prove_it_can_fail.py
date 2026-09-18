@@ -443,6 +443,27 @@ MUTATIONS = [
         "                out.append(turn.answer)",
         ["the introduction check is not shown the chunk ids either"],
     ),
+    # The stop condition itself. It was one-directional in prose for a week;
+    # these are the two ways it can go back to being one-directional in code.
+    (
+        "accept.py",
+        "the citation clause removed: only the stage is judged",
+        "        if step.cites_same_as is not None:",
+        "        if False:",
+        ["answering something else fails, even though the turn was answered",
+         "control: a transcript that answered something else is held",
+         "the self-check sorts all three transcripts"],
+    ),
+    (
+        "accept.py",
+        "a step nobody asserts reported as a pass",
+        '            out.append(Verdict(step, turn, None,\n'
+        '                               f"observed: {turn.stage}"))',
+        '            out.append(Verdict(step, turn, True,\n'
+        '                               f"observed: {turn.stage}"))',
+        ["a step that is observed and not asserted is neither held nor failed",
+         "control: an observed step is counted as a pass"],
+    ),
 ]
 
 
