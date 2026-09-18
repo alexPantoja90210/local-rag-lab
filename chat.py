@@ -38,6 +38,12 @@ from ask import DECIDE_SYSTEM, GROUND_SYSTEM, DEFAULT_CHAT_MODEL, DEFAULT_EMBED_
 from measure_window import DEFAULT_MODEL, RealTokenizer
 
 
+def _q(query_obj):
+    """One shape for the query detail, so the two paths cannot drift apart."""
+    return {"query": query_obj.text, "query_source": query_obj.source,
+            "carried": query_obj.carried}
+
+
 def converse_turn(question, *, talk, chat_model, embedder, store_obj,
                   fingerprint, transport, k, threshold, known_ids,
                   presupposition_check=False):
@@ -75,27 +81,46 @@ def converse_turn(question, *, talk, chat_model, embedder, store_obj,
                               stage=retrieval.SKIPPED,
                               refusal=verdict.reason()), {"text": text}
 
-    query = oc.tool_query(first)
+    # IA-194. The query is composed here, not requested. When the question
+    # leans on a reference, the model is not asked to resolve it: the turn it
+    # refers to is appended in code. A question with no reference keeps the
+    # model's rewrite, and the Query records which of the two happened.
+    antecedent = talk.antecedent()
+    query_obj = rg.compose_query(question, oc.tool_query(first),
+                                 antecedent=antecedent)
+    query = query_obj.text
 
     # IA-192, and the reason this sits here rather than below: it needs the
-    # rewrite and nothing else, so it refuses before the embedding call. Every
-    # other check reads the rewrite on its own; this one is the only one that
+    # query and nothing else, so it refuses before the embedding call. Every
+    # other check reads the query on its own; this one is the only one that
     # compares the question asked against the question sent.
+    #
+    # With a composed query it is satisfied by construction. It stays as the
+    # guard: it is what goes red if the model's rewrite is ever routed back
+    # into retrieval, and the harness mutates exactly that.
     survives = rg.check_referent_survives(question, query,
-                                          antecedent=talk.antecedent())
+                                          antecedent=antecedent)
     if not survives.allowed:
         return retrieval.Turn(question=question, retrieved=False, supplied=(),
                               stage=conv.REFUSED_DRIFT,
-                              refusal=survives.reason()), {"query": query}
+                              refusal=survives.reason()), _q(query_obj)
 
     found = retrieval.retrieve(query, embedder=embedder, store_obj=store_obj,
                                fingerprint=fingerprint, k=k, threshold=threshold)
     if found.declined:
         return retrieval.Turn(question=question, retrieved=True, supplied=(),
                               stage=retrieval.REFUSED_THRESHOLD,
-                              refusal=found.reason()), {"query": query}
+                              refusal=found.reason()), _q(query_obj)
 
-    said = [t.question for t in talk.turns] + [question]
+    # IA-194 exposed a disagreement between two parts of this file. The
+    # composer carries words forward from the answer the user was shown; the
+    # introduction check counted only what the USER had typed, so those words
+    # looked invented and the turn was refused for quoting its own transcript.
+    # "What the conversation contained" has two sides, and this is the list
+    # that says so.
+    said = ([t.question for t in talk.turns]
+            + [t.answer for t in talk.turns if t.answer]
+            + [question])
     texts = [h.record.text for h in found.result.hits]
 
     # The deterministic half always runs: it asks the model for nothing.
@@ -105,7 +130,7 @@ def converse_turn(question, *, talk, chat_model, embedder, store_obj,
             question=question, retrieved=True, supplied=found.supplied,
             stage=conv.REFUSED_REWRITE,
             refusal=rg.RewriteVerdict(False, True, introduced, None, None,
-                                      query).reason()), {"query": query}
+                                      query).reason()), _q(query_obj)
 
     # IA-189. The presupposition check is off by default. It is the only
     # mechanism here that needs the model to perform a task, and on the first
@@ -123,12 +148,12 @@ def converse_turn(question, *, talk, chat_model, embedder, store_obj,
             return retrieval.Turn(
                 question=question, retrieved=True, supplied=found.supplied,
                 stage=conv.UNREADABLE_REWRITE,
-                refusal=str(exc)), {"query": query}
+                refusal=str(exc)), _q(query_obj)
         if not rewrite.allowed:
             return retrieval.Turn(
                 question=question, retrieved=True, supplied=found.supplied,
                 stage=conv.REFUSED_REWRITE,
-                refusal=rewrite.reason()), {"query": query}
+                refusal=rewrite.reason()), _q(query_obj)
 
     second = oc.chat(chat_model,
                      [{"role": "system",
@@ -145,8 +170,8 @@ def converse_turn(question, *, talk, chat_model, embedder, store_obj,
     return retrieval.Turn(
         question=question, retrieved=True, supplied=found.supplied, stage=stage,
         refusal=None if verdict.passed else verdict.reason(),
-        answer=verdict.answer if verdict.passed else None), {"query": query,
-                                                             "gate": verdict}
+        answer=verdict.answer if verdict.passed else None,
+    ), dict(_q(query_obj), gate=verdict)
 
 
 def main(argv=None) -> int:
@@ -192,6 +217,8 @@ def main(argv=None) -> int:
     print(f"budget     {args.token_budget} tokens per turn, seed ratio "
           f"{args.seed_ratio} chars/token")
     print(f"threshold  {args.threshold if args.threshold is not None else 'none, stated explicitly'}")
+    print(f"query      composed in code when the question refers back (IA-194); "
+          f"the model's rewrite otherwise")
     print(f"rewrite    referent-survival and introduced-word checks always on; "
           f"presupposition check "
           f"{'ON' if args.presupposition_check else 'OFF (IA-189)'}")
@@ -221,7 +248,9 @@ def main(argv=None) -> int:
 
         talk.record(turn)
         if detail.get("query"):
-            print(f"     rewritten as: {detail['query']}")
+            label = ("composed" if detail.get("query_source") == rg.QUERY_COMPOSED
+                     else "model   ")
+            print(f"     searched as [{label}]: {detail['query']}")
         if turn.answer is not None:
             print(f"\n{turn.answer}\n")
         else:

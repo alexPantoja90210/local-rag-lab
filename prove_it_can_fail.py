@@ -362,16 +362,22 @@ MUTATIONS = [
         "the survival check allows everything",
         "    return Survival(bool(preserved), referring, tuple(preserved), rewrite,",
         "    return Survival(True, referring, tuple(preserved), rewrite,",
+        # After IA-194 this mutation reddens unit invariants only, and that is
+        # correct rather than weak: with a composed query the `bool(preserved)`
+        # branch is no longer reachable from chat.py. The guard is exercised
+        # where it still lives. The mutation that removes the composition,
+        # below, is what proves the glue.
         ["the rewrite that answered a question nobody asked is refused",
          "control: a rewrite that kept nothing from the turn it refers to is allowed",
-         "a drifted rewrite stops the turn in the real code path"],
+         "and the refusal names the reference it failed to carry"],
     ),
     (
         "chat.py",
         "the survival check built but never acted on, which is the defect itself",
         "    if not survives.allowed:",
         "    if False:",
-        ["a drifted rewrite stops the turn in the real code path",
+        ["a reference with nothing answered behind it stops the turn in the "
+         "real code path",
          "and it stops before the embedder is ever called"],
     ),
     (
@@ -383,6 +389,39 @@ MUTATIONS = [
         "        for turn in reversed(self.turns):\n"
         "            return (turn.question, turn.answer or \"\")",
         ["a refused turn is skipped when looking for what a reference points at"],
+    ),
+    # IA-194. Composition can fail in two directions and both are silent.
+    (
+        "rewrite_gate.py",
+        "the query requested from the model again, the pre-IA-194 behaviour",
+        "    if not conv.referring_words(question):\n"
+        "        return Query(model_rewrite, QUERY_MODEL, ())",
+        "    if True:\n"
+        "        return Query(model_rewrite, QUERY_MODEL, ())",
+        ["a referring follow-up searches with a query the code composed",
+         "the model's drifted rewrite never reaches retrieval",
+         "so the turn that broke the first conversation now reaches an answer",
+         "control: the model's rewrite still reaches retrieval on a referring turn"],
+    ),
+    (
+        "rewrite_gate.py",
+        "composition applied to every turn, so the split it records is a lie",
+        "    if not conv.referring_words(question):\n"
+        "        return Query(model_rewrite, QUERY_MODEL, ())",
+        "    if False:\n"
+        "        return Query(model_rewrite, QUERY_MODEL, ())",
+        ["a question with no reference still uses the model's rewrite",
+         "and that query is the model's text unchanged",
+         "control: a self-contained question is composed too"],
+    ),
+    (
+        "chat.py",
+        "the introduction check shown only what the user typed",
+        "            + [t.answer for t in talk.turns if t.answer]",
+        "            + []",
+        ["a word the system itself showed the user is not an introduction",
+         "control: the query carries forward a word the user never typed and "
+         "the turn survives"],
     ),
 ]
 

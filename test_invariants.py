@@ -1900,41 +1900,107 @@ class _CountingEmbedder:
         return self._inner.embed(text)
 
 
-_counting = _CountingEmbedder(_emb)
-_talk192 = _talk()
-_talk192.record(_answered(q="what is the annual learning budget", ans="$2,500"))
-_drift_turn = chatmod.converse_turn(
-    "can it be used for conferences?", talk=_talk192, chat_model="m",
-    embedder=_counting, store_obj=_S4, fingerprint=_fp4,
-    transport=_scripted(_called("NeuralFlow AI for conferences"),
-                        _said_msg("unused"), _said_msg("unused")),
+# A reference with nothing answered behind it still dies here, and for free.
+# After IA-194 this is the only path left that reaches the guard through
+# chat.py, which is the point: the guard stops being the defence.
+_orphan = _CountingEmbedder(_emb)
+_orphan_turn = chatmod.converse_turn(
+    "can it be used for conferences?", talk=_talk(), chat_model="m",
+    embedder=_orphan, store_obj=_S4, fingerprint=_fp4,
+    transport=_scripted(_called("conferences"), _said_msg("unused")),
     k=3, threshold=None, known_ids=_known4)[0]
-check("a drifted rewrite stops the turn in the real code path",
-      _drift_turn.stage == conv.REFUSED_DRIFT)
-check("and it stops before the embedder is ever called",
-      _counting.calls == 0)
-check("and before an answer is generated, with the script still holding two",
-      _drift_turn.answer is None)
+check("a reference with nothing answered behind it stops the turn in the real "
+      "code path", _orphan_turn.stage == conv.REFUSED_DRIFT)
+check("and it stops before the embedder is ever called", _orphan.calls == 0)
 
-_kept = _CountingEmbedder(_emb)
-_talk_ok = _talk()
-_talk_ok.record(_answered(q="what is the learning budget", ans="$2,500"))
-_kept_turn = chatmod.converse_turn(
-    "can it be used for conferences?", talk=_talk_ok, chat_model="m",
-    embedder=_kept, store_obj=_S4, fingerprint=_fp4,
-    transport=_scripted(_called("learning budget conferences"),
-                        _said_msg("The budget is $2,500 [[%s]]." % _SUP5)),
-    k=3, threshold=None, known_ids=_known4)[0]
-check("a follow-up whose rewrite kept the subject reaches an answer",
-      _kept_turn.stage == retrieval.ANSWERED)
-check("and that one did reach the embedder, so the invariant above is about "
-      "the refusal and not about a broken stub",
-      _kept.calls > 0)
 
-control("a follow-up whose rewrite kept the subject is refused anyway",
-        _kept_turn.stage != retrieval.ANSWERED,
-        "every follow-up dies before retrieval, so refusing the drifted one "
-        "proves nothing")
+# --- IA-194: the query is composed, not requested ---------------------------
+#
+# The drift that broke the first conversation is not caught here. It never
+# happens, because the model is no longer asked to resolve the reference. The
+# rewrite it produced is thrown away and the query is built from the user's own
+# turn plus the turn it refers to.
+
+_ANT6 = _answered(q="what is the annual learning budget", ans="$2,500")
+_DRIFT = "NeuralFlow AI for conferences"
+_FOLLOW = "can it be used for conferences?"
+
+_composed6 = rg.compose_query(_FOLLOW, _DRIFT,
+                              antecedent=(_ANT6.question, _ANT6.answer))
+_probe6 = retrieval.retrieve(_composed6.text, embedder=_emb, store_obj=_S4,
+                             fingerprint=_fp4, k=3, threshold=None)
+_SUP6 = _probe6.supplied[0]
+
+
+def _follow_turn(question=_FOLLOW, rewrite=_DRIFT, embedder=None, talk=None):
+    if talk is None:
+        talk = _talk()
+        talk.record(_ANT6)
+    return chatmod.converse_turn(
+        question, talk=talk, chat_model="m", embedder=embedder or _emb,
+        store_obj=_S4, fingerprint=_fp4,
+        transport=_scripted(_called(rewrite),
+                            _said_msg("Yes [[%s]]." % _SUP6)),
+        k=3, threshold=None, known_ids=_known4)
+
+
+_drift6, _detail6 = _follow_turn()
+check("a referring follow-up searches with a query the code composed",
+      _detail6["query_source"] == rg.QUERY_COMPOSED)
+check("the model's drifted rewrite never reaches retrieval",
+      "neuralflow" not in _detail6["query"].lower())
+check("and the turn being referred to is in the query instead",
+      "learning" in _detail6["query"].lower()
+      and "budget" in _detail6["query"].lower())
+check("so the turn that broke the first conversation now reaches an answer",
+      _drift6.stage == retrieval.ANSWERED)
+check("and the query says which words it carried forward",
+      "budget" in _detail6["carried"])
+
+_self6, _sdetail6 = _follow_turn(question="what is the 401k match?",
+                                 rewrite="401k company match")
+check("a question with no reference still uses the model's rewrite",
+      _sdetail6["query_source"] == rg.QUERY_MODEL)
+check("and that query is the model's text unchanged",
+      _sdetail6["query"] == "401k company match")
+
+control("a referring follow-up is refused anyway",
+        _follow_turn()[0].stage != retrieval.ANSWERED,
+        "composing the query did not make the turn answerable, so none of the "
+        "assertions above are about IA-194")
+control("the model's rewrite still reaches retrieval on a referring turn",
+        "neuralflow" in _follow_turn()[1]["query"].lower(),
+        "the composition is not happening, so the drift is still in the query")
+control("a self-contained question is composed too",
+        _follow_turn(question="what is the 401k match?",
+                     rewrite="401k company match")[1]["query_source"]
+        == rg.QUERY_COMPOSED,
+        "composition applies to every turn, so the split it records is a lie")
+
+# The two paths must not drift apart: whichever produced it, the query is the
+# thing retrieval searched with and the thing the refusal quotes.
+check("both query paths report through one shape",
+      set(_detail6) >= {"query", "query_source", "carried"}
+      and set(_sdetail6) >= {"query", "query_source", "carried"})
+check("a query from the model records no carried words, because it carried none",
+      _sdetail6["carried"] == ())
+# The collision IA-194 exposed, kept as its own assertion because it was a
+# silent refusal: the composer carried "$2,500" forward from the answer, and
+# the introduction check had only ever been shown what the USER typed, so the
+# system's own words looked invented.
+check("a word the system itself showed the user is not an introduction",
+      _drift6.stage != conv.REFUSED_REWRITE)
+check("and the query really does carry a word only the answer contained",
+      any(w in _detail6["query"] for w in ("500", "$2")))
+control("the query carries forward a word the user never typed and the turn "
+        "survives", _drift6.stage == conv.REFUSED_REWRITE,
+        "the introduction check refuses the composer's own output, so the two "
+        "disagree about what the conversation contained")
+
+check("a query that is neither composed nor from the model cannot be built",
+      _raises(lambda: rg.Query("x", "guessed", ()), ValueError))
+check("an empty query cannot be built either",
+      _raises(lambda: rg.Query("  ", rg.QUERY_MODEL, ()), ValueError))
 
 
 # ---------------------------------------------------------------------------

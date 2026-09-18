@@ -62,6 +62,36 @@ discovered.** A model that paraphrases faithfully -- *learning budget* into
 false refusal, it is the conservative direction, and it is the thing to measure
 before this mechanism is called good.
 
+Which is what happened, and what IA-194 does about it
+-----------------------------------------------------
+
+The check worked and the conversation still could not be held. `llama3.1:8b`
+produced *"NeuralFlow AI for conferences"* twice, hours apart, identically. The
+turn went from answered-wrong-quietly to refused-correctly-and-loudly, which is
+better and is not a usable chat.
+
+At that point the fault is not in the gate. It is in having asked the model for
+the query at all. Resolving a reference against history *and* returning a search
+query is a two-part instruction, and this repository has recorded twice already
+that a two-part instruction has two ways to be half-obeyed.
+
+So `compose_query` takes the reference resolution away from the model and does
+it in code: the user's own turn, plus the content words of the turn it refers
+to. The result is ugly and nobody reads it -- an embedder consumes it.
+
+    can it be used for conferences? annual learning budget 2 500
+
+**The survival check above does not go away, and its role changes.** It stops
+being the defence and becomes the guard: with a composed query it is satisfied
+by construction, and it is what goes red if anyone ever routes the model's
+rewrite back into retrieval. The mutation that does exactly that is in the
+harness.
+
+What is deliberately NOT changed: a question carrying no reference still uses
+the model's rewrite. There is no evidence that it fails there, and swapping it
+out on no evidence would be the same mistake in the other direction. The query
+records which path produced it so the two can be counted and compared later.
+
 **A cited presupposition.** The model is asked to state what its own rewritten
 question presupposes, one claim per line, each citing a supplied chunk or marked
 `[[none]]`. Those lines go through `citation_gate` unchanged. Same contract, same
@@ -347,3 +377,58 @@ def check_referent_survives(question: str, rewrite: str, *,
                 preserved.append(raw)
     return Survival(bool(preserved), referring, tuple(preserved), rewrite,
                     tuple(antecedent))
+
+
+# --------------------------------------------------------------------------
+# IA-194. The query is composed, not requested.
+# --------------------------------------------------------------------------
+
+QUERY_COMPOSED = "composed"
+QUERY_MODEL = "model"
+
+
+@dataclass(frozen=True)
+class Query:
+    """The text retrieval will actually search with, and where it came from."""
+
+    text: str
+    source: str
+    carried: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.source not in (QUERY_COMPOSED, QUERY_MODEL):
+            raise ValueError(f"a query from nowhere: {self.source!r}")
+        if not self.text.strip():
+            raise ValueError("an empty query searches for nothing")
+        if self.source == QUERY_MODEL and self.carried:
+            raise ValueError(
+                "a query taken from the model carried nothing forward by "
+                "definition; recording words against it would be a second "
+                "story about where the query came from")
+
+
+def compose_query(question: str, model_rewrite: str, *,
+                  antecedent: Sequence[str]) -> Query:
+    """Build the retrieval query in code when the question leans on a reference.
+
+    Not a rewrite and not meant to read like one. Retrieval embeds this; no
+    person sees it. What matters is that every word in it is traceable: the
+    user's own turn, plus words the earlier turn actually contained.
+
+    A question with no reference keeps the model's rewrite, deliberately. See
+    the module docstring.
+    """
+    if not conv.referring_words(question):
+        return Query(model_rewrite, QUERY_MODEL, ())
+
+    seen = content_words(question)
+    carried: list[str] = []
+    for text in antecedent:
+        for raw in _WORD.findall(text.lower()):
+            if raw in STOPWORDS or raw in seen:
+                continue
+            carried.append(raw)
+            seen.add(raw)
+            seen.add(_normalise(raw))
+    text = " ".join([question.strip()] + carried)
+    return Query(text, QUERY_COMPOSED, tuple(carried))
